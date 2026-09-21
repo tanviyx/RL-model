@@ -1,0 +1,54 @@
+# =====================
+# Environment variables
+# =====================
+.env
+.env.local
+.env.*.local
+
+# =====================
+# Node.js
+# =====================
+node_modules/
+dist/
+build/
+cert/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =====================
+# MongoDB
+# =====================
+data/
+db/
+
+# =====================
+# Docker
+# =====================
+docker-compose.override.yml
+*.log
+
+# =====================
+# Jenkins / CI
+# =====================
+jenkins_home/
+
+# =====================
+# Editor / OS
+# =====================
+.vscode/
+!.vscode/extensions.json
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =====================
+# Git
+# =====================
+*.orig
+
+
+

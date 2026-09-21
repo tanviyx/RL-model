@@ -1,0 +1,50 @@
+services:
+  mongo:
+    image: mongo
+    container_name: traffic_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build: ./server
+    container_name: traffic_backend
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/Capstone
+      - JWT_SECRET=${JWT_SECRET}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - BASE_URL=http://localhost:5000
+    volumes:
+    - ./certs:/app/certs
+
+  frontend:   # 👈 MUST be inside services
+    build: ./client
+    container_name: traffic_frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./certs:/app/certs   # 👈 required for HTTPS
+
+volumes:
+  mongo_data:
+
+
+
+
+
+
+
+
+
+
+
+
+
