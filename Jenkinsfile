@@ -2,9 +2,9 @@ pipeline {
     agent any
 
     environment {
-        JWT_SECRET  = credentials('capstone-jwt-secret')
-        SMTP_USER   = credentials('capstone-smtp-user')
-        SMTP_PASS   = credentials('capstone-smtp-pass')
+        JWT_SECRET = credentials('capstone-jwt-secret')
+        SMTP_USER  = credentials('capstone-smtp-user')
+        SMTP_PASS  = credentials('capstone-smtp-pass')
     }
 
     stages {
@@ -16,25 +16,25 @@ pipeline {
 
         stage('Stop Old Containers') {
             steps {
-                bat 'docker compose down --remove-orphans || exit 0'
+                sh 'docker compose down --remove-orphans || true'
             }
         }
 
         stage('Build Docker Images') {
             steps {
-                bat 'docker compose build'
+                sh 'docker compose build'
             }
         }
 
         stage('Deploy Containers') {
             steps {
-                bat 'docker compose up -d --remove-orphans'
+                sh 'docker compose up -d --remove-orphans'
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                bat 'docker ps'
+                sh 'docker ps'
             }
         }
     }
