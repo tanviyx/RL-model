@@ -16,25 +16,25 @@ pipeline {
 
         stage('Stop Old Containers') {
             steps {
-                sh 'docker compose down --remove-orphans || true'
+                bat 'docker compose down --remove-orphans || exit 0'
             }
         }
 
         stage('Build Docker Images') {
             steps {
-                sh 'docker compose build'
+                bat 'docker compose build'
             }
         }
 
         stage('Deploy Containers') {
             steps {
-                sh 'docker compose up -d --remove-orphans'
+                bat 'docker compose up -d --remove-orphans'
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                sh 'docker ps'
+                bat 'docker ps'
             }
         }
     }
