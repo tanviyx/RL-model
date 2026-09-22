@@ -1,8 +1,13 @@
 pipeline {
     agent any
 
-    stages {
+    environment {
+        JWT_SECRET  = credentials('capstone-jwt-secret')
+        SMTP_USER   = credentials('capstone-smtp-user')
+        SMTP_PASS   = credentials('capstone-smtp-pass')
+    }
 
+    stages {
         stage('Checkout') {
             steps {
                 checkout scm
@@ -11,48 +16,35 @@ pipeline {
 
         stage('Stop Old Containers') {
             steps {
-                bat 'docker compose down -v --remove-orphans || exit 0'
-            }
-        }
-
-        // 🔥 NEW: Force cleanup (fixes your issue)
-        stage('Force Cleanup Docker') {
-            steps {
-                bat '''
-                echo Removing conflicting containers...
-                docker rm -f traffic_mongo || exit 0
-                docker rm -f traffic_backend || exit 0
-                docker rm -f traffic_frontend || exit 0
-                '''
+                sh 'docker compose down --remove-orphans || true'
             }
         }
 
         stage('Build Docker Images') {
             steps {
-                bat 'docker compose build --no-cache'
+                sh 'docker compose build'
             }
         }
 
         stage('Deploy Containers') {
             steps {
-                bat 'docker compose up -d --remove-orphans'
+                sh 'docker compose up -d --remove-orphans'
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                bat 'docker ps'
-                bat 'docker images'
+                sh 'docker ps'
             }
         }
     }
 
     post {
         success {
-            echo 'Deployment Successful 🚀'
+            echo 'Deployment Successful'
         }
         failure {
-            echo 'Pipeline Failed ❌'
+            echo 'Pipeline Failed'
         }
     }
 }
