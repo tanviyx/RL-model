@@ -28,13 +28,7 @@ const Navbar = () => {
       <div className="flex gap-4">
         <Link to="/login">
           <button className="bg-red-500 text-white px-6 py-2 rounded-full hover:bg-red-600 transition">
-            Login
-          </button>
-        </Link>
-
-        <Link to="/register">
-          <button className="bg-red-500 text-white px-6 py-2 rounded-full hover:bg-red-600 transition">
-            Register
+            Continue with Google
           </button>
         </Link>
 

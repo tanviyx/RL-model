@@ -2,39 +2,80 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
+import { DEFAULT_CFG, MAX_QUEUE, createState, step, qTablePolicy } from './simCore.js';
+import { loadDemand, listSources, makeRateFn, poisson, formatClock, recordedRange } from './demand.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load the Q-table securely on the backend
+// ---------------- configuration ----------------
+// Optional external inference service. When unset the learned Q-table is used.
+const RL_SERVICE_URL = process.env.RL_SERVICE_URL || '';
+const DEMAND_SCALE = Number(process.env.DEMAND_SCALE || 1);      // calibrate real demand to sim capacity
+const SPEEDS = [1, 5, 10, 30, 60];                               // simulated seconds per wall tick
+
+// ---------------- learned policy (Q-table) ----------------
 const qTablePath = path.join(__dirname, '../config/q_table.json');
 let qTable = null;
 try {
   qTable = JSON.parse(fs.readFileSync(qTablePath, 'utf-8'));
-  console.log("trafficSim: Q-table loaded securely.");
+  console.log(`trafficSim: Q-table loaded (${qTable.length}x${qTable.length} states).`);
 } catch (e) {
-  console.error("trafficSim: Failed to load Q-table in server:", e);
+  console.error('trafficSim: Failed to load Q-table in server:', e.message);
 }
+const tablePolicy = qTable ? qTablePolicy(qTable) : () => 0;
+
+// ---------------- real demand (optional) ----------------
+const demand = loadDemand(path.join(__dirname, '../config/demand.json'));
+// The dataset only covers part of the day; the simulated clock stays inside that window.
+const range = demand ? recordedRange(demand) : null;
+console.log(
+  demand
+    ? `trafficSim: demand loaded (${Object.keys(demand.days).length} recorded days, ${formatClock(range.start)}-${formatClock(range.end)}).`
+    : 'trafficSim: no demand.json found - using synthetic arrivals.'
+);
+
+// Where the simulated clock starts (seconds since midnight). DEMAND_START_HOUR may override it.
+const startClock = () => {
+  const env = process.env.DEMAND_START_HOUR;
+  const wanted = env !== undefined && env !== '' ? Number(env) * 3600 : NaN;
+  if (range) return Number.isFinite(wanted) && wanted >= range.start && wanted < range.end ? wanted : range.start;
+  return Number.isFinite(wanted) ? wanted : 7 * 3600;
+};
 
 class TrafficSimulation {
   constructor(io) {
     this.io = io;
-    this.nsQueue = 0;
-    this.ewQueue = 0;
-    this.light = 0; // 0=NS, 1=EW
-    this.cleared = 0;
-    this.reward = 0;
-    this.cumulativeReward = 0;
     this.isRunning = false;
-    this.tickRate = 800; // Simulated ms per step
+    this.tickRate = 800;        // wall-clock ms between updates
     this.intervalId = null;
-    this.spawnRate = 0.4;
-    this.lanes = 4;
+    this.busy = false;
+    this.spawnRate = 0.4;       // only used by the "synthetic" source
+    this.speed = 1;
     this.intersection = 1;
-    this.timeInPhase = 0;
-    this.simMode = 'intersection';
-    this.nsWait = [];
-    this.ewWait = [];
+    this.cfg = { ...DEFAULT_CFG };
+    this.sources = ['synthetic', ...listSources(demand)];
+
+    const wanted = process.env.DEMAND_SOURCE;
+    this.setSource(
+      wanted && this.sources.includes(wanted) ? wanted : demand ? 'profile' : 'synthetic',
+      false
+    );
+    this.resetState();
+  }
+
+  resetState() {
+    this.state = createState();
+    this.clock = startClock(); // seconds since midnight
+  }
+
+  setSource(source, reset = true) {
+    if (!this.sources.includes(source)) return false;
+    this.source = source;
+    this.rateFn = source === 'synthetic' ? null : makeRateFn(demand, source, DEMAND_SCALE);
+    this.cfg.maxQueue = source === 'synthetic' ? MAX_QUEUE.synthetic : MAX_QUEUE.real;
+    if (reset) this.reset();
+    return true;
   }
 
   start() {
@@ -47,123 +88,89 @@ class TrafficSimulation {
   pause() {
     this.isRunning = false;
     if (this.intervalId) clearInterval(this.intervalId);
+    this.intervalId = null;
     this.broadcastState();
   }
 
   reset() {
     this.pause();
-    this.nsQueue = 0;
-    this.ewQueue = 0;
-    this.light = 0;
-    this.cleared = 0;
-    this.reward = 0;
-    this.cumulativeReward = 0;
+    this.resetState();
     this.broadcastState();
   }
+
+  // Vehicles arriving during the next simulated second
+  arrivals() {
+    if (!this.rateFn) {
+      // synthetic: fixed chance per second per axis (the original behaviour)
+      return {
+        ns: Math.random() < this.spawnRate ? 1 : 0,
+        ew: Math.random() < this.spawnRate ? 1 : 0,
+      };
+    }
+    const r = this.rateFn(this.clock);
+    return { ns: poisson(r.ns), ew: poisson(r.ew) };
+  }
+
+  // 0 = keep, 1 = switch
+  async decide() {
+    const s = this.state;
+    if (RL_SERVICE_URL) {
+      try {
+        const response = await axios.post(`${RL_SERVICE_URL}/get_signal`, {
+          traffic: [s.nsQueue, s.nsQueue, s.ewQueue, s.ewQueue],
+        }, { timeout: 200 });
+        const sig = response.data.signal;
+        return (sig === 'EW_GREEN' && s.light === 0) || (sig === 'NS_GREEN' && s.light === 1) ? 1 : 0;
+      } catch (e) {
+        // fall through to the local Q-table
+      }
+    }
+    return tablePolicy(s);
+  }
+
   async tick() {
-    // 1. Try to get action from FastAPI, fallback to Q-Table
-    let action = 0;
-    this.timeInPhase++;
-
+    if (this.busy) return;
+    this.busy = true;
     try {
-      const response = await axios.post('http://localhost:8000/get_signal', {
-        traffic: [this.nsQueue, this.nsQueue, this.ewQueue, this.ewQueue]
-      }, { timeout: 200 });
-
-      const modelSignal = response.data.signal;
-      if ((modelSignal === "EW_GREEN" && this.light === 0) || 
-          (modelSignal === "NS_GREEN" && this.light === 1)) {
-        action = 1;
-      } else {
-        action = 0;
+      for (let i = 0; i < this.speed; i++) {
+        const action = await this.decide();
+        step(this.state, action, this.arrivals(), this.cfg);
+        this.clock += 1;
+        // replay the recorded window instead of running into hours that have no data
+        if (this.rateFn && range && this.clock >= range.end) this.clock = range.start;
       }
-    } catch (e) {
-      // Fallback to local Q-Table logic if FastAPI is down
-      const stateNs = Math.min(this.nsQueue, 10);
-      const stateEw = Math.min(this.ewQueue, 10);
-      if (qTable && qTable[stateNs] && qTable[stateNs][stateEw] && qTable[stateNs][stateEw][this.light]) {
-        const actions = qTable[stateNs][stateEw][this.light];
-        action = (actions[1] > actions[0]) ? 1 : 0;
-      }
+      this.broadcastState();
+    } finally {
+      this.busy = false;
     }
+  }
 
-    // 2. Apply Agent Action
-    let switched = false;
-    if (action === 1) {
-      this.light = 1 - this.light;
-      this.timeInPhase = 0;
-      switched = true;
-    }
-    let currentLight = this.light;
-
-    // 3. Clear Traffic (Lanes affect clearing speed)
-    let trafficCleared = 0;
-    const clearBatch = Math.ceil(this.lanes / 2);
-    
-    if (currentLight === 0 && this.nsQueue > 0) {
-      const toClear = Math.min(this.nsQueue, clearBatch);
-      this.nsQueue -= toClear;
-      trafficCleared += toClear;
-      this.nsWait.splice(0, toClear); // Remove oldest
-    }
-    if (currentLight === 1 && this.ewQueue > 0) {
-      const toClear = Math.min(this.ewQueue, clearBatch);
-      this.ewQueue -= toClear;
-      trafficCleared += toClear;
-      this.ewWait.splice(0, toClear); // Remove oldest
-    }
-    this.cleared += trafficCleared;
-
-    // 4. Spawn new cars & Increment wait times
-    this.nsWait = this.nsWait.map(t => t + 1);
-    this.ewWait = this.ewWait.map(t => t + 1);
-
-    if (Math.random() < this.spawnRate) {
-      this.nsQueue = Math.min(this.nsQueue + 1, 10);
-      this.nsWait.push(0);
-    }
-    if (this.simMode === 'intersection') {
-      if (Math.random() < this.spawnRate) {
-        this.ewQueue = Math.min(this.ewQueue + 1, 10);
-        this.ewWait.push(0);
-      }
-    } else {
-      this.ewQueue = 0;
-      this.ewWait = [];
-    }
-
-    // 5. Calculate Reward (Real-world weighted penalty)
-    const totalQueue = this.nsQueue + (this.simMode === 'intersection' ? this.ewQueue : 0);
-    const totalWait = (this.nsWait.reduce((a, b) => a + b, 0) + this.ewWait.reduce((a, b) => a + b, 0));
-    
-    // Penalty for queues AND cumulative wait time
-    let currentReward = -(totalQueue * 1.5) - (totalWait * 0.2);
-    // Bonus for clearing traffic
-    currentReward += trafficCleared * 10.0;
-    // Penalty for switching
-    if (switched) currentReward -= 5.0;
-
-    this.reward = currentReward;
-    this.cumulativeReward += currentReward;
-
-    // Broadcast globally to all watchers
-    this.broadcastState();
+  snapshot() {
+    const s = this.state;
+    const rates = this.rateFn ? this.rateFn(this.clock) : null;
+    return {
+      nsQueue: s.nsQueue,
+      ewQueue: s.ewQueue,
+      light: s.light,
+      cleared: s.cleared,
+      reward: s.reward,
+      cumulativeReward: s.cumulativeReward,
+      isRunning: this.isRunning,
+      spawnRate: this.spawnRate,
+      lanes: this.cfg.lanes,
+      intersection: this.intersection,
+      simMode: this.cfg.simMode,
+      demandSource: this.source,
+      sources: this.sources,
+      speed: this.speed,
+      simTime: formatClock(this.clock),
+      rateNS: rates ? Number(rates.ns.toFixed(3)) : null,
+      rateEW: rates ? Number(rates.ew.toFixed(3)) : null,
+    };
   }
 
   broadcastState() {
-    this.io.emit('sim_update', {
-      nsQueue: this.nsQueue,
-      ewQueue: this.ewQueue,
-      light: this.light,
-      cleared: this.cleared,
-      reward: this.reward,
-      cumulativeReward: this.cumulativeReward,
-      isRunning: this.isRunning,
-      spawnRate: this.spawnRate,
-      lanes: this.lanes,
-      intersection: this.intersection,
-      simMode: this.simMode
-    });
+    this.io.emit('sim_update', this.snapshot());
   }
 }
 
@@ -175,26 +182,42 @@ export const initializeSimulation = (io) => {
 
   io.on('connection', (socket) => {
     console.log(`[Socket] User connected to Traffic Sim: ${socket.id}`);
-    
+
     // Transmit an immediate snapshot to syncing client
-    socket.emit('sim_update', {
-      nsQueue: globalSim.nsQueue,
-      ewQueue: globalSim.ewQueue,
-      light: globalSim.light,
-      cleared: globalSim.cleared,
-      isRunning: globalSim.isRunning
-    });
+    socket.emit('sim_update', globalSim.snapshot());
 
     socket.on('start_sim', () => globalSim.start());
     socket.on('pause_sim', () => globalSim.pause());
     socket.on('reset_sim', () => globalSim.reset());
-    socket.on('set_spawn_rate', (rate) => { globalSim.spawnRate = rate; globalSim.broadcastState(); });
+
+    socket.on('set_spawn_rate', (rate) => {
+      const r = Number(rate);
+      if (!Number.isFinite(r)) return;
+      globalSim.spawnRate = Math.min(1, Math.max(0, r));
+      globalSim.broadcastState();
+    });
+
+    socket.on('set_demand_source', (source) => {
+      if (typeof source !== 'string' || !globalSim.setSource(source)) {
+        console.warn('[Sim] Rejected demand source:', source);
+      }
+    });
+
+    socket.on('set_speed', (speed) => {
+      const sp = Number(speed);
+      if (!SPEEDS.includes(sp)) return;
+      globalSim.speed = sp;
+      globalSim.broadcastState();
+    });
 
     socket.on('update_config', (config) => {
-      console.log("[Sim] Updating configuration:", config);
-      if (config.lanes) globalSim.lanes = config.lanes;
-      if (config.intersection) globalSim.intersection = config.intersection;
-      if (config.simMode) globalSim.simMode = config.simMode;
+      console.log('[Sim] Updating configuration:', config);
+      const lanes = Number(config?.lanes);
+      if (Number.isInteger(lanes) && lanes >= 1 && lanes <= 8) globalSim.cfg.lanes = lanes;
+      if (config?.intersection) globalSim.intersection = config.intersection;
+      if (config?.simMode === 'single' || config?.simMode === 'intersection') {
+        globalSim.cfg.simMode = config.simMode;
+      }
       globalSim.broadcastState();
     });
 

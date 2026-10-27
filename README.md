@@ -85,6 +85,18 @@ Capstone_project/
 ## Installation & Setup
 Steps to run locally.
 
+## Google Sign-In
+Authentication uses Google Identity Services. Create an OAuth 2.0 Client ID in Google Cloud Console and add `https://localhost:5173` as an authorized JavaScript origin.
+
+For Docker Compose, add the same client ID to the root `.env` file:
+
+```env
+GOOGLE_CLIENT_ID=your-google-oauth-client-id
+JWT_SECRET=your-session-signing-secret
+```
+
+The client ID is passed to both the frontend and backend. For local development outside Docker, set `VITE_GOOGLE_CLIENT_ID` for the Vite client and `GOOGLE_CLIENT_ID` for the server to that same value. The server also needs `MONGO_URI` and `JWT_SECRET`.
+
 ## Team Members
 - Shivanshi 
 - Tanvi

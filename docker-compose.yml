@@ -2,47 +2,59 @@ services:
   mongo:
     image: mongo
     container_name: traffic_mongo
-    ports:
-      - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   backend:
-    build: ./server
+    build:
+      context: ./server
+      target: runtime
     container_name: traffic_backend
     ports:
       - "5000:5000"
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
     environment:
       - MONGO_URI=mongodb://mongo:27017/Capstone
       - JWT_SECRET=${JWT_SECRET}
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASS=${SMTP_PASS}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - BASE_URL=http://localhost:5000
-    volumes:
-    - ./certs:/app/certs
+      # Load level of the real-demand simulation (see tools/evaluate.mjs for how it was chosen)
+      - DEMAND_SCALE=${DEMAND_SCALE:-3}
+      - DEMAND_START_HOUR=${DEMAND_START_HOUR:-}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('https').get('https://localhost:5000/api/health',{rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
-  frontend:   # 👈 MUST be inside services
-    build: ./client
+  frontend:
+    build:
+      context: ./client
+      target: runtime
     container_name: traffic_frontend
     ports:
       - "5173:5173"
     depends_on:
       - backend
-    volumes:
-      - ./certs:/app/certs   # 👈 required for HTTPS
+    environment:
+      # Same Google client ID, exposed to Vite so login.jsx can read it
+      - VITE_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
 
 volumes:
   mongo_data:
-
-
-
-
-
-
-
-
 
 
 

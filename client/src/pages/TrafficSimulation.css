@@ -258,3 +258,24 @@
 .svg-car {
   transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
+
+/* Demand source / speed selectors */
+.cyber-select {
+  width: 100%;
+  background: #1a1a24;
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  outline: none;
+}
+.cyber-select:focus { border-color: #00f2fe; }
+.cyber-select:disabled { opacity: 0.5; cursor: not-allowed; }
+.demand-readout {
+  margin-top: 0.6rem;
+  font-size: 0.75rem;
+  color: #6c7086;
+  letter-spacing: 1px;
+}

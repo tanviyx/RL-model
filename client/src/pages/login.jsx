@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState, useEffect, useRef } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import API from "../api/axios";
 
 const flows = [81, 84, 79, 88, 83, 77, 90];
@@ -9,23 +9,117 @@ const congColors = ["#00c896", "#00c896", "#ffc300", "#00c896", "#00c896", "#ff3
 
 const Login = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [tick, setTick] = useState(0);
+  const [mode, setMode] = useState(searchParams.get("mode") === "signup" ? "signup" : "login");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [tick, setTick] = useState(0);
+  const [authError, setAuthError] = useState("");
+  const [googleNote, setGoogleNote] = useState("");
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const googleButtonRef = useRef(null);
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => (t + 1) % flows.length), 3000);
     return () => clearInterval(id);
   }, []);
 
-  const handleLogin = async (e) => {
+  useEffect(() => {
+    if (!googleClientId) {
+      setGoogleNote("Google sign-in is not configured (VITE_GOOGLE_CLIENT_ID is missing).");
+      return undefined;
+    }
+
+    const initializeGoogleButton = () => {
+      if (!window.google?.accounts?.id || !googleButtonRef.current) return;
+
+      window.google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: async ({ credential }) => {
+          setIsSigningIn(true);
+          setAuthError("");
+
+          try {
+            await API.post("/auth/google", { credential });
+            navigate("/setup-automation");
+          } catch (error) {
+            setAuthError(error.response?.data?.message || "Google sign-in failed. Please try again.");
+            setIsSigningIn(false);
+          }
+        },
+      });
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "filled_black",
+        size: "large",
+        text: "continue_with",
+        shape: "rectangular",
+        width: 320,
+      });
+    };
+
+    let script = document.getElementById("google-identity-script");
+    const handleScriptError = () => {
+      setGoogleNote("Google sign-in could not be loaded. Check your connection and refresh.");
+    };
+
+    if (window.google?.accounts?.id) {
+      initializeGoogleButton();
+    } else {
+      if (!script) {
+        script = document.createElement("script");
+        script.id = "google-identity-script";
+        script.src = "https://accounts.google.com/gsi/client";
+        script.async = true;
+        script.defer = true;
+        document.head.appendChild(script);
+      }
+
+      script.addEventListener("load", initializeGoogleButton);
+      script.addEventListener("error", handleScriptError);
+    }
+
+    return () => {
+      script?.removeEventListener("load", initializeGoogleButton);
+      script?.removeEventListener("error", handleScriptError);
+    };
+  }, [googleClientId, navigate]);
+
+  const switchMode = (next) => {
+    setMode(next);
+    setAuthError("");
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    setAuthError("");
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (mode === "signup" && name.trim().length < 2) {
+      return setAuthError("Please enter your name.");
+    }
+    if (!/^\S+@\S+\.\S+$/.test(cleanEmail)) {
+      return setAuthError("Please enter a valid email address.");
+    }
+    if (mode === "signup" && password.length < 8) {
+      return setAuthError("Password must be at least 8 characters.");
+    }
+    if (!password) {
+      return setAuthError("Please enter your password.");
+    }
+
+    setIsSigningIn(true);
     try {
-      const res = await API.post("/auth/login", { email, password });
-      alert(res.data.message || "ACCESS GRANTED");
+      if (mode === "signup") {
+        await API.post("/auth/register", { name: name.trim(), email: cleanEmail, password });
+      } else {
+        await API.post("/auth/login", { email: cleanEmail, password });
+      }
       navigate("/setup-automation");
     } catch (error) {
-      alert(error.response?.data?.message || "ACCESS DENIED");
+      setAuthError(error.response?.data?.message || "Something went wrong. Please try again.");
+      setIsSigningIn(false);
     }
   };
 
@@ -260,72 +354,102 @@ const Login = () => {
           transition: color 0.4s;
         }
 
-        /* form fields */
-        .tr-field-group { margin-bottom: 16px; }
-        .tr-field-label {
-          font-family: 'Share Tech Mono', monospace;
-          font-size: 10px; color: rgba(0,200,150,0.6);
-          letter-spacing: 0.2em; margin-bottom: 6px; display: block;
+        .tr-google-login {
+          display: flex;
+          min-height: 48px;
+          justify-content: center;
+          margin-top: 20px;
+          opacity: ${isSigningIn ? 0.55 : 1};
+          pointer-events: ${isSigningIn ? "none" : "auto"};
         }
-        .tr-field-wrap {
-          display: flex; align-items: center;
-          background: rgba(0,200,150,0.03);
-          border: 1px solid rgba(0,200,150,0.15);
-          border-radius: 4px;
-          transition: border-color 0.2s, background 0.2s;
+        .tr-auth-error {
+          min-height: 18px;
+          margin-top: 12px;
+          color: #ff8c8c;
+          font: 11px 'Share Tech Mono', monospace;
+          letter-spacing: 0.04em;
+          text-align: center;
         }
-        .tr-field-wrap:focus-within {
-          border-color: rgba(0,200,150,0.5);
-          background: rgba(0,200,150,0.06);
+        .tr-signin-note {
+          margin-top: 16px;
+          color: rgba(255,255,255,0.3);
+          font: 10px 'Share Tech Mono', monospace;
+          letter-spacing: 0.1em;
+          text-align: center;
         }
-        .tr-field-icon {
-          padding: 0 12px; display: flex;
-          align-items: center; opacity: 0.5;
+
+        /* ── AUTH FORM ── */
+        .tr-tabs {
+          display: flex;
+          margin-bottom: 20px;
+          border-bottom: 1px solid rgba(0,200,150,0.15);
+        }
+        .tr-tab {
+          flex: 1;
+          padding: 10px 0;
+          background: none;
+          border: none;
+          border-bottom: 2px solid transparent;
+          margin-bottom: -1px;
+          color: rgba(255,255,255,0.35);
+          font: 600 13px 'Rajdhani', sans-serif;
+          letter-spacing: 0.2em;
+          cursor: pointer;
+          transition: color 0.2s, border-color 0.2s;
+        }
+        .tr-tab:hover { color: rgba(255,255,255,0.65); }
+        .tr-tab.active { color: #00c896; border-bottom-color: #00c896; }
+
+        .tr-form { display: flex; flex-direction: column; gap: 14px; }
+        .tr-field { display: flex; flex-direction: column; gap: 5px; }
+        .tr-label {
+          font: 9px 'Share Tech Mono', monospace;
+          color: rgba(0,200,150,0.5);
+          letter-spacing: 0.15em;
         }
         .tr-input {
-          flex: 1; background: transparent; border: none; outline: none;
-          color: #c8ede4;
-          font-family: 'Share Tech Mono', monospace;
-          font-size: 12px; letter-spacing: 0.08em;
-          padding: 12px 12px 12px 0;
+          width: 100%;
+          background: rgba(0,200,150,0.04);
+          border: 1px solid rgba(0,200,150,0.15);
+          border-radius: 3px;
+          padding: 11px 12px;
+          color: #e8f5f0;
+          font: 500 15px 'Rajdhani', sans-serif;
+          letter-spacing: 0.03em;
+          outline: none;
+          transition: border-color 0.2s, background 0.2s;
         }
-        .tr-input::placeholder {
-          color: rgba(255,255,255,0.18);
-          font-size: 11px; letter-spacing: 0.12em;
+        .tr-input::placeholder { color: rgba(255,255,255,0.2); }
+        .tr-input:focus { border-color: #00c896; background: rgba(0,200,150,0.08); }
+        .tr-submit {
+          margin-top: 4px;
+          padding: 12px;
+          background: #00c896;
+          border: none;
+          border-radius: 3px;
+          color: #04110d;
+          font: 700 14px 'Rajdhani', sans-serif;
+          letter-spacing: 0.2em;
+          cursor: pointer;
+          transition: filter 0.2s, opacity 0.2s;
         }
-
-        /* submit button */
-        .tr-btn {
-          width: 100%; margin-top: 24px; padding: 14px;
-          background: transparent;
-          border: 1px solid rgba(0,200,150,0.5);
-          color: #00c896;
-          font-family: 'Rajdhani', sans-serif;
-          font-size: 15px; font-weight: 700;
-          letter-spacing: 0.35em; cursor: pointer;
-          position: relative; overflow: hidden;
-          transition: all 0.25s; border-radius: 3px;
+        .tr-submit:hover:not(:disabled) { filter: brightness(1.12); }
+        .tr-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+        .tr-or {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-top: 18px;
+          color: rgba(255,255,255,0.25);
+          font: 10px 'Share Tech Mono', monospace;
+          letter-spacing: 0.2em;
         }
-        .tr-btn::before {
+        .tr-or::before, .tr-or::after {
           content: '';
-          position: absolute; left: -100%; top: 0; bottom: 0; width: 100%;
-          background: rgba(0,200,150,0.1);
-          transition: left 0.3s ease;
+          flex: 1;
+          height: 1px;
+          background: rgba(0,200,150,0.15);
         }
-        .tr-btn:hover::before { left: 0; }
-        .tr-btn:hover { color: #aff0df; border-color: rgba(0,200,150,0.8); }
-        .tr-btn:active { transform: scale(0.98); }
-
-        /* footer */
-        .tr-footer {
-          margin-top: 20px;
-          font-size: 12px; color: rgba(255,255,255,0.2);
-          letter-spacing: 0.12em;
-          display: flex; justify-content: space-between; align-items: center;
-          font-family: 'Share Tech Mono', monospace;
-        }
-        .tr-footer a { color: rgba(0,200,150,0.7); text-decoration: none; transition: color 0.2s; }
-        .tr-footer a:hover { color: #00c896; }
 
         /* responsive */
         @media (max-width: 640px) {
@@ -487,55 +611,78 @@ const Login = () => {
             </div>
           </div>
 
-          {/* Form */}
-          <form onSubmit={handleLogin}>
-            <div className="tr-field-group">
-              <label className="tr-field-label">OPERATOR ID</label>
-              <div className="tr-field-wrap">
-                <div className="tr-field-icon">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                    <path d="M8 8C10.21 8 12 6.21 12 4C12 1.79 10.21 0 8 0C5.79 0 4 1.79 4 4C4 6.21 5.79 8 8 8ZM8 10C5.33 10 0 11.34 0 14V16H16V14C16 11.34 10.67 10 8 10Z" fill="rgba(0,200,150,0.7)"/>
-                  </svg>
-                </div>
-                <input
-                  type="email"
-                  placeholder="operator@trafficgrid.sys"
-                  className="tr-input"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
+          {/* Log in / Sign up tabs */}
+          <div className="tr-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "login"}
+              className={`tr-tab ${mode === "login" ? "active" : ""}`}
+              onClick={() => switchMode("login")}
+            >
+              LOG IN
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "signup"}
+              className={`tr-tab ${mode === "signup" ? "active" : ""}`}
+              onClick={() => switchMode("signup")}
+            >
+              SIGN UP
+            </button>
+          </div>
 
-            <div className="tr-field-group">
-              <label className="tr-field-label">ACCESS KEY</label>
-              <div className="tr-field-wrap">
-                <div className="tr-field-icon">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                    <path d="M11 0C8.24 0 6 2.24 6 5C6 5.36 6.04 5.71 6.11 6.04L0 12.17V15H2.83L3.5 14.33V13H4.83L5.5 12.33V11H6.83L8.96 8.87C9.29 8.96 9.64 9 10 9C12.76 9 15 6.76 15 4C15 1.24 12.76-1 10-1L11 0ZM11 2C11.55 2 12 2.45 12 3C12 3.55 11.55 4 11 4C10.45 4 10 3.55 10 3C10 2.45 10.45 2 11 2Z" fill="rgba(0,200,150,0.7)"/>
-                  </svg>
-                </div>
+          <form className="tr-form" onSubmit={handleSubmit} noValidate>
+            {mode === "signup" && (
+              <label className="tr-field">
+                <span className="tr-label">NAME</span>
                 <input
-                  type="password"
-                  placeholder="••••••••••••"
                   className="tr-input"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
+                  type="text"
+                  autoComplete="name"
+                  placeholder="Your name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                 />
-              </div>
-            </div>
-
-            <button type="submit" className="tr-btn">
-              ENTER CONTROL SYSTEM
+              </label>
+            )}
+            <label className="tr-field">
+              <span className="tr-label">EMAIL</span>
+              <input
+                className="tr-input"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </label>
+            <label className="tr-field">
+              <span className="tr-label">PASSWORD</span>
+              <input
+                className="tr-input"
+                type="password"
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                placeholder={mode === "signup" ? "At least 8 characters" : "Your password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+            <button className="tr-submit" type="submit" disabled={isSigningIn}>
+              {isSigningIn ? "PLEASE WAIT..." : mode === "signup" ? "CREATE ACCOUNT" : "LOG IN"}
             </button>
           </form>
 
-          {/* Footer */}
-          <div className="tr-footer">
-            <span>NEW OPERATOR?</span>
-            <Link to="/register" className="">REQUEST CLEARANCE →</Link>
+          <div className="tr-or">OR</div>
+          <div
+            className="tr-google-login"
+            ref={googleButtonRef}
+            aria-label="Continue with Google"
+          />
+          {googleNote && <div className="tr-signin-note">{googleNote}</div>}
+          <div className="tr-auth-error" role="alert" aria-live="polite">
+            {authError}
           </div>
         </div>
       </div>

@@ -2,8 +2,6 @@ import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import Home from "./pages/home";
 import Login from "./pages/login";
 import Register from "./pages/register";
-import VerifyEmail from "./pages/VerifyEmail";
-import ResetPassword from "./pages/resetpassword";
 import Navbar from "./components/Navbar";
 import Welcome from "./pages/Welcome";
 import TrafficSimulation from "./pages/TrafficSimulation";
@@ -24,8 +22,6 @@ const AppLayout = () => {
         <Route path='/' element={<Home />} />
         <Route path='/login' element={<Login />} />
         <Route path='/register' element={<Register />} />
-        <Route path="/verify-email" element={<VerifyEmail />} />
-        <Route path='/reset-password' element={<ResetPassword />} />
         <Route path="/welcome" element={<Welcome />} />
         <Route path="/setup-automation" element={<ProtectedRoute><SetupAutomation /></ProtectedRoute>} />
         <Route path="/simulation" element={<ProtectedRoute><TrafficSimulation /></ProtectedRoute>} />

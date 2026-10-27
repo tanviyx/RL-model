@@ -248,6 +248,9 @@ useEffect(() => {
   const onStartPause = () => { if (!socket) return; simState.isRunning ? socket.emit('pause_sim') : socket.emit('start_sim'); };
   const onReset = () => { if (!socket) return; socket.emit('reset_sim'); setCars([]); };
   const onSpawn = e => { if (!socket) return; socket.emit('set_spawn_rate', parseFloat(e.target.value)); };
+  const onSource = e => { if (!socket) return; socket.emit('set_demand_source', e.target.value); };
+  const onSpeed = e => { if (!socket) return; socket.emit('set_speed', parseInt(e.target.value, 10)); };
+  const usingRealDemand = !!simState.demandSource && simState.demandSource !== 'synthetic';
 
   const nsGreen = simState.light === 0;
   const ewGreen = !nsGreen;
@@ -268,6 +271,32 @@ useEffect(() => {
 
         <div className="control-panel glass-panel">
           <h3 className="panel-title">SIMULATION CONTROLS</h3>
+            {simState.sources && (
+            <div className="slider-wrapper">
+              <div className="slider-header">
+                <label>TRAFFIC DEMAND</label>
+                <span className="slider-value">{simState.simTime}</span>
+              </div>
+              <select className="cyber-select" value={simState.demandSource} onChange={onSource} disabled={!connected}>
+                {simState.sources.map(src => (
+                  <option key={src} value={src}>
+                    {src === 'synthetic' ? 'Synthetic (random)' : src === 'profile' ? 'Pune - average day' : `Pune - ${src.slice(4)}`}
+                  </option>
+                ))}
+              </select>
+              {usingRealDemand && (
+                <div className="demand-readout">
+                  N-S {simState.rateNS} veh/s · E-W {simState.rateEW} veh/s
+                </div>
+              )}
+              <div className="slider-header" style={{ marginTop: '1rem', marginBottom: 0 }}>
+                <label>SIM SPEED</label>
+                <select className="cyber-select" style={{ width: 'auto' }} value={simState.speed} onChange={onSpeed} disabled={!connected}>
+                  {[1, 5, 10, 30, 60].map(v => <option key={v} value={v}>{v}x</option>)}
+                </select>
+              </div>
+            </div>
+          )}
           <div className="slider-wrapper">
             <div className="slider-header">
               <label>SPAWN RATE</label>
@@ -275,7 +304,7 @@ useEffect(() => {
             </div>
             <input type="range" min="0.1" max="1.0" step="0.05"
               value={simState.spawnRate || 0.4} onChange={onSpawn}
-              disabled={!connected} className="cyber-slider" />
+              disabled={!connected || usingRealDemand} className="cyber-slider" />
           </div>
           <div className="button-group">
             <button className={`cyber-btn ${!simState.isRunning ? 'action-start' : 'action-pause'}`}

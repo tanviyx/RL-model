@@ -1,0 +1,20 @@
+{
+  "synthetic": true,
+  "episodes": 600,
+  "window": 1800,
+  "cap": 20,
+  "scale": 1,
+  "seed": 1,
+  "trainDays": null,
+  "testDays": null,
+  "cfg": {
+    "lanes": 4,
+    "simMode": "intersection",
+    "maxQueue": 10,
+    "minGreen": 5,
+    "switchPenalty": 5,
+    "clearBonus": 10,
+    "queueWeight": 1.5,
+    "waitWeight": 0.2
+  }
+}

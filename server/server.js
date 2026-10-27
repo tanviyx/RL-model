@@ -5,6 +5,7 @@ import cors from "cors";
 import https from "https";
 import fs from "fs";
 import { Server } from "socket.io";
+import mongoose from "mongoose";
 
 import connectDB from "./config/mongodb.js";
 import authRoutes from "./routes/authRoutes.js";
@@ -28,6 +29,15 @@ app.use(
     credentials: true,
   })
 );
+
+// ================= HEALTH (used by Docker and Jenkins) =================
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    db: mongoose.connection.readyState === 1,
+    uptime: Math.round(process.uptime()),
+  });
+});
 
 // ================= ROUTES =================
 app.use("/api/auth", authRoutes);
