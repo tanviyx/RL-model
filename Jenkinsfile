@@ -76,7 +76,7 @@ pipeline {
 
                     echo "Checking that the frontend answers..."
                     for i in $(seq 1 20); do
-                        if docker exec traffic_frontend node -e "require('http').get('http://localhost:5173',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
+                        if docker exec traffic_frontend node -e "require('https').get('https://localhost:5173',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
                             echo "frontend OK"
                             exit 0
                         fi
