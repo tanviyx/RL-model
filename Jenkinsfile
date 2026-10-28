@@ -5,6 +5,7 @@ pipeline {
         timestamps()
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '20'))
+        timeout(time: 30, unit: 'MINUTES')   // a stuck build now fails by itself
     }
 
     triggers {
@@ -13,19 +14,15 @@ pipeline {
     }
 
     environment {
-        // Same project name as a manual "docker compose up" in the RL-model folder, so Jenkins
-        // replaces that stack (and reuses its database volume) instead of creating a second one.
+        // Same project name as a manual "docker compose up" in the RL-model folder,
+        // so Jenkins replaces that stack (and reuses its database volume).
         COMPOSE_PROJECT_NAME = 'rl-model'
         JWT_SECRET       = credentials('capstone-jwt-secret')
         GOOGLE_CLIENT_ID = credentials('capstone-google-client-id')
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
+        // Jenkins checks out the repo automatically before the first stage.
 
         stage('Server tests and policy gate') {
             steps {
@@ -34,56 +31,48 @@ pipeline {
             }
         }
 
-        stage('Client lint (report only)') {
+        stage('Client lint and build') {
             steps {
-                // problems mark the build UNSTABLE (yellow) but do not stop the pipeline
+                // lint problems mark the build UNSTABLE (yellow) but do not stop the pipeline
                 catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
                     sh 'docker build --target lint -t rl-client-lint ./client'
                 }
-            }
-        }
-
-        stage('Client production build') {
-            steps {
+                // the production build must succeed
                 sh 'docker build --target build -t rl-client-build ./client'
-            }
-        }
-
-        stage('Build images') {
-            steps {
-                sh 'docker compose build'
             }
         }
 
         stage('Deploy') {
             steps {
-                sh 'docker compose down --remove-orphans || true'
-                sh 'docker compose up -d'
+                // builds the images and replaces the running containers in one step
+                sh 'docker compose up -d --build --remove-orphans'
             }
         }
 
         stage('Verify deployment') {
             steps {
                 sh '''
-                    echo "Waiting for the backend to report healthy..."
-                    for i in $(seq 1 40); do
-                        status=$(docker inspect --format '{{.State.Health.Status}}' traffic_backend 2>/dev/null || echo missing)
-                        echo "backend health: $status"
-                        if [ "$status" = "healthy" ]; then break; fi
-                        if [ "$i" = "40" ]; then docker logs traffic_backend --tail 60; exit 1; fi
-                        sleep 4
-                    done
+                    # retry <tries> <seconds> <command...>
+                    retry() {
+                        tries=$1; delay=$2; shift 2
+                        for i in $(seq 1 "$tries"); do
+                            "$@" && return 0
+                            sleep "$delay"
+                        done
+                        return 1
+                    }
 
-                    echo "Checking that the frontend answers..."
-                    for i in $(seq 1 20); do
-                        if docker exec traffic_frontend node -e "require('https').get('https://localhost:5173',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
-                            echo "frontend OK"
-                            exit 0
-                        fi
-                        sleep 3
-                    done
-                    docker logs traffic_frontend --tail 60
-                    exit 1
+                    backend_ok() {
+                        [ "$(docker inspect -f '{{.State.Health.Status}}' traffic_backend)" = "healthy" ]
+                    }
+
+                    frontend_ok() {
+                        docker exec traffic_frontend node -e "require('https').get('https://localhost:5173',{rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+                    }
+
+                    retry 40 4 backend_ok  || { docker logs traffic_backend --tail 60; exit 1; }
+                    retry 20 3 frontend_ok || { docker logs traffic_frontend --tail 60; exit 1; }
+                    echo "Backend healthy, frontend answering."
                 '''
             }
         }
