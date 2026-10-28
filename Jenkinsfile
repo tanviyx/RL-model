@@ -9,8 +9,8 @@ pipeline {
     }
 
     triggers {
-        // Jenkins runs on localhost, so GitHub cannot call it: look for new commits every ~5 minutes
-        pollSCM('H/5 * * * *')
+        githubPush()                    // instant, from the webhook
+        pollSCM('H/15 * * * *')         // fallback if the tunnel is down
     }
 
     environment {
