@@ -1,7 +1,7 @@
 services:
   mongo:
     image: mongo
-    container_name: traffic_mongo
+    container_name: traffic_mongo1
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -15,7 +15,7 @@ services:
     build:
       context: ./server
       target: runtime
-    container_name: traffic_backend
+    container_name: traffic_backend1
     ports:
       - "5000:5000"
     depends_on:
@@ -44,7 +44,7 @@ services:
     build:
       context: ./client
       target: runtime
-    container_name: traffic_frontend
+    container_name: traffic_frontend1
     ports:
       - "5173:5173"
     depends_on:

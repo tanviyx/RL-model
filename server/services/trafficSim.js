@@ -66,6 +66,7 @@ class TrafficSimulation {
 
   resetState() {
     this.state = createState();
+    this.epoch = (this.epoch || 0) + 1; // lets clients know the run was restarted
     this.clock = startClock(); // seconds since midnight
   }
 
@@ -132,14 +133,20 @@ class TrafficSimulation {
     if (this.busy) return;
     this.busy = true;
     try {
+      // what happened during the simulated seconds covered by this update
+      const ev = { arrNS: 0, arrEW: 0, srvNS: 0, srvEW: 0 };
       for (let i = 0; i < this.speed; i++) {
         const action = await this.decide();
-        step(this.state, action, this.arrivals(), this.cfg);
+        const r = step(this.state, action, this.arrivals(), this.cfg);
+        ev.arrNS += r.acceptedNS;
+        ev.arrEW += r.acceptedEW;
+        ev.srvNS += r.servedNS;
+        ev.srvEW += r.servedEW;
         this.clock += 1;
         // replay the recorded window instead of running into hours that have no data
         if (this.rateFn && range && this.clock >= range.end) this.clock = range.start;
       }
-      this.broadcastState();
+      this.broadcastState(ev);
     } finally {
       this.busy = false;
     }
@@ -166,11 +173,18 @@ class TrafficSimulation {
       simTime: formatClock(this.clock),
       rateNS: rates ? Number(rates.ns.toFixed(3)) : null,
       rateEW: rates ? Number(rates.ew.toFixed(3)) : null,
+      epoch: this.epoch,
+      lostLeft: s.lostLeft,
+      lostTime: this.cfg.lostTime,
+      timeInPhase: s.timeInPhase,
+      minGreen: this.cfg.minGreen,
+      maxQueue: this.cfg.maxQueue,
     };
   }
 
-  broadcastState() {
-    this.io.emit('sim_update', this.snapshot());
+  // `events` is only set by tick(); every other broadcast carries no new traffic
+  broadcastState(events = null) {
+    this.io.emit('sim_update', { ...this.snapshot(), events });
   }
 }
 

@@ -1,590 +1,469 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useReducer } from 'react';
 import { io } from 'socket.io-client';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import './TrafficSimulation.css';
+import {
+  W, H, ROAD_W, CX, CY, NS_L, NS_R, EW_T, EW_B, PAVE, CROSS,
+  STOP_POS, laneCenter, makeWorld, applyUpdate, stepWorld, lampState,
+} from './trafficWorld';
 
-// ─── Constants ──────────────────────────────────────────────────────────────────
-const W = 800, H = 800;
-const ROAD_W = 144;
-const CX = W / 2, CY = H / 2;
+const SOCKET_URL = 'https://localhost:5000';
+const SPEEDS = [1, 5, 10, 30, 60];
+const FONT = "'Barlow', system-ui, sans-serif";
+const FONT_NUM = "'Barlow Condensed', 'Barlow', sans-serif";
+const LAMP = { red: '#ff5a4a', amber: '#ffb020', green: '#2ee59d' };
+const STATE_TEXT = { red: 'Red', amber: 'Amber', green: 'Green' };
+const ROT = { SN: 0, EW: 90, NS: 180, WE: 270 }; // cars are drawn facing up, then rotated
 
-const ROAD_NS_LEFT = CX - ROAD_W / 2;  // 328
-const ROAD_NS_RIGHT = CX + ROAD_W / 2;  // 472
-const ROAD_EW_TOP = CY - ROAD_W / 2;  // 328
-const ROAD_EW_BOT = CY + ROAD_W / 2;  // 472
+// ─── Map: static scenery (re-renders only when the mode or lane count changes) ───
+const BUILDING = ['#222831', '#272d37', '#20252d', '#2b313b'];
 
-const IX1 = ROAD_NS_LEFT, IX2 = ROAD_NS_RIGHT;
-const IY1 = ROAD_EW_TOP, IY2 = ROAD_EW_BOT;
-
-const CAR_W = 24;   // width perpendicular to travel direction
-const CAR_H = 40;   // length along travel direction
-const CAR_GAP = 8;   // minimum bumper-to-bumper gap
-
-// Dynamic lane centre calculation
-function getLaneCenter(dir, lane, totalLanes) {
-  const dirW = ROAD_W / 2;
-  const laneWidth = dirW / totalLanes;
-  const offset = (lane + 0.5) * laneWidth;
-  
-  if (dir === 'NS') return ROAD_NS_LEFT + dirW + offset;
-  if (dir === 'SN') return ROAD_NS_RIGHT - dirW - offset;
-  if (dir === 'EW') return ROAD_EW_TOP + dirW + offset;
-  if (dir === 'WE') return ROAD_EW_BOT - dirW - offset;
-  return 0;
+function Block({ x, y, w, h, seed }) {
+  const cols = Math.max(1, Math.round(w / 140));
+  const rows = Math.max(1, Math.round(h / 140));
+  const cw = w / cols, ch = h / rows;
+  const cells = [];
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      const k = (seed * 7 + i * 13 + j * 5) % 6;
+      const cx = x + i * cw + 9, cy = y + j * ch + 9, bw = cw - 18, bh = ch - 18;
+      if (bw < 14 || bh < 14) continue;
+      cells.push(
+        k === 0 ? (
+          <g key={`${i}-${j}`}>
+            <rect x={cx} y={cy} width={bw} height={bh} rx={6} fill="#1b2620" />
+            {[0.28, 0.62, 0.45].map((f, t) => (
+              <circle key={t} cx={cx + bw * (0.2 + t * 0.3)} cy={cy + bh * f} r={Math.min(bw, bh) * 0.12} fill="#22352b" />
+            ))}
+          </g>
+        ) : (
+          <g key={`${i}-${j}`}>
+            <rect x={cx} y={cy} width={bw} height={bh} rx={4} fill={BUILDING[(i + j + seed) % 4]} stroke="#343b47" strokeWidth={1} />
+            <rect x={cx + bw * 0.18} y={cy + bh * 0.18} width={bw * 0.28} height={bh * 0.22} rx={2} fill="#2f3641" />
+          </g>
+        )
+      );
+    }
+  }
+  return <g>{cells}</g>;
 }
 
-// Stop position = where the FRONT of a car must halt
-const STOP_POS = {
-  NS: IY1 - 6,       // southbound stops above intersection
-  SN: IY2 + 6,       // northbound stops below intersection
-  EW: IX1 - 6,       // eastbound stops left of intersection
-  WE: IX2 + 6,       // westbound stops right of intersection
-};
-
-// +1 means position increases as car moves forward; -1 means decreases
-const SIGN = { NS: 1, SN: -1, EW: 1, WE: -1 };
-
-// Starting positions (off screen entry edge)
-const START_POS = { NS: -CAR_H / 2 - 10, SN: H + CAR_H / 2 + 10, EW: -CAR_H / 2 - 10, WE: W + CAR_H / 2 + 10 };
-const END_POS = { NS: H + CAR_H, SN: -CAR_H, EW: W + CAR_H, WE: -CAR_H };
-
-let uid = 0;
-const COLORS = ['#e63946', '#2a9d8f', '#e9c46a', '#264653', '#f4a261', '#6a0572', '#118ab2', '#06d6a0', '#ef476f', '#457b9d'];
-function makeCar(dir, totalLanes = 4) {
-  return {
-    id: uid++, direction: dir, color: COLORS[uid % COLORS.length],
-    pos: START_POS[dir], speed: 1.7 + Math.random() * 0.7, stopped: false,
-    lane: Math.floor(Math.random() * totalLanes)
-  };
-}
-
-// ─── Car SVG shape ────────────────────────────────────────────────────────────
-function CarShape({ car, totalLanes }) {
-  const isH = car.direction === 'EW' || car.direction === 'WE';
-  const flip = car.direction === 'SN' || car.direction === 'WE';
-  const lCenter = getLaneCenter(car.direction, car.lane, totalLanes);
-  const cx = isH ? car.pos : lCenter;
-  const cy = isH ? lCenter : car.pos;
-  const rW = isH ? CAR_H : CAR_W;
-  const rH = isH ? CAR_W : CAR_H;
-  const g = 'rgba(215,240,255,0.82)';
+const Scene = React.memo(function Scene({ mode, lanes }) {
+  const inter = mode === 'intersection';
+  const vSegs = inter ? [[0, EW_T], [EW_B, H]] : [[0, H]];
+  const hSegs = inter ? [[0, NS_L], [NS_R, W]] : [];
+  const step = ROAD_W / 2 / lanes;
+  const dividers = Array.from({ length: lanes - 1 }, (_, i) => (i + 1) * step);
+  const asphalt = '#23272e';
+  const dash = '20 16';
+  const stripe = 'rgba(255,255,255,0.26)';
+  const yellow = 'rgba(214,174,40,0.85)';
 
   return (
     <g>
-      {/* shadow */}
-      <rect x={cx - rW / 2 + 2} y={cy - rH / 2 + 4} width={rW} height={rH} rx={5} fill="rgba(0,0,0,0.22)" />
-      {/* body */}
-      <rect x={cx - rW / 2} y={cy - rH / 2} width={rW} height={rH} rx={5} fill={car.color} />
-      {/* cabin glass */}
-      {isH
-        ? <rect x={cx - rW / 2 + 8} y={cy - rH / 2 + 4} width={rW - 20} height={rH - 8} rx={3} fill={g} />
-        : <rect x={cx - rW / 2 + 4} y={cy - rH / 2 + 8} width={rW - 8} height={rH - 20} rx={3} fill={g} />
-      }
-      {/* headlights */}
-      {isH && !flip && <><circle cx={cx + rW / 2 - 4} cy={cy - rH / 2 + 5} r={3} fill="#fffde7" /><circle cx={cx + rW / 2 - 4} cy={cy + rH / 2 - 5} r={3} fill="#fffde7" /></>}
-      {isH && flip && <><circle cx={cx - rW / 2 + 4} cy={cy - rH / 2 + 5} r={3} fill="#fffde7" /><circle cx={cx - rW / 2 + 4} cy={cy + rH / 2 - 5} r={3} fill="#fffde7" /></>}
-      {!isH && !flip && <><rect x={cx - rW / 2 + 3} y={cy + rH / 2 - 5} width={6} height={4} rx={1} fill="#fffde7" /><rect x={cx + rW / 2 - 9} y={cy + rH / 2 - 5} width={6} height={4} rx={1} fill="#fffde7" /></>}
-      {!isH && flip && <><rect x={cx - rW / 2 + 3} y={cy - rH / 2 + 1} width={6} height={4} rx={1} fill="#fffde7" /><rect x={cx + rW / 2 - 9} y={cy - rH / 2 + 1} width={6} height={4} rx={1} fill="#fffde7" /></>}
-      {/* tail lights */}
-      {isH && !flip && <><rect x={cx - rW / 2} y={cy - rH / 2 + 3} width={5} height={5} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /><rect x={cx - rW / 2} y={cy + rH / 2 - 8} width={5} height={5} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /></>}
-      {isH && flip && <><rect x={cx + rW / 2 - 5} y={cy - rH / 2 + 3} width={5} height={5} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /><rect x={cx + rW / 2 - 5} y={cy + rH / 2 - 8} width={5} height={5} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /></>}
-      {!isH && !flip && <><rect x={cx - rW / 2 + 3} y={cy - rH / 2} width={6} height={4} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /><rect x={cx + rW / 2 - 9} y={cy - rH / 2} width={6} height={4} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /></>}
-      {!isH && flip && <><rect x={cx - rW / 2 + 3} y={cy + rH / 2 - 4} width={6} height={4} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /><rect x={cx + rW / 2 - 9} y={cy + rH / 2 - 4} width={6} height={4} rx={1} fill={car.stopped ? '#ff1744' : '#aa2222'} /></>}
-    </g>
-  );
-}
+      <rect width={W} height={H} fill="#12151a" />
 
-// ─── Traffic Light Pole ───────────────────────────────────────────────────────
-function Pole({ x, y, green }) {
-  return (
-    <g transform={`translate(${x},${y})`}>
-      <rect x={-3} y={-65} width={6} height={65} rx={2} fill="#555" />
-      <rect x={-13} y={-92} width={26} height={62} rx={5} fill="#111" stroke="#333" strokeWidth={1.5} />
-      <circle cx={0} cy={-78} r={9} fill={green ? '#200000' : '#ff1744'}
-        style={{ filter: green ? 'none' : 'drop-shadow(0 0 7px #ff1744)', transition: 'fill 0.4s' }} />
-      <circle cx={0} cy={-61} r={9} fill="#1a1200" />
-      <circle cx={0} cy={-44} r={9} fill={green ? '#00e676' : '#001508'}
-        style={{ filter: green ? 'drop-shadow(0 0 9px #00e676)' : 'none', transition: 'fill 0.4s' }} />
-    </g>
-  );
-}
+      {/* city blocks */}
+      {inter ? (
+        <>
+          <Block x={0} y={0} w={NS_L - PAVE} h={EW_T - PAVE} seed={1} />
+          <Block x={NS_R + PAVE} y={0} w={W - NS_R - PAVE} h={EW_T - PAVE} seed={2} />
+          <Block x={0} y={EW_B + PAVE} w={NS_L - PAVE} h={H - EW_B - PAVE} seed={3} />
+          <Block x={NS_R + PAVE} y={EW_B + PAVE} w={W - NS_R - PAVE} h={H - EW_B - PAVE} seed={4} />
+        </>
+      ) : (
+        <>
+          <Block x={0} y={0} w={NS_L - PAVE} h={H} seed={1} />
+          <Block x={NS_R + PAVE} y={0} w={W - NS_R - PAVE} h={H} seed={2} />
+        </>
+      )}
 
-// ─── Main Component ───────────────────────────────────────────────────────────
-export default function TrafficSimulation() {
-  const [simState, setSimState] = useState({
-    nsQueue: 0, ewQueue: 0, light: 0, cleared: 0, reward: 0, cumulativeReward: 0, isRunning: false, spawnRate: 0.4,
-    simMode: 'intersection'
-  });
-  const [perfData, setPerfData] = useState([]);
-  const [socket, setSocket] = useState(null);
-  const [connected, setConnected] = useState(false);
-  const [cars, setCars] = useState([]);
+      {/* pavements */}
+      <rect x={NS_L - PAVE} y={0} width={ROAD_W + PAVE * 2} height={H} fill="#2c313a" />
+      {inter && <rect x={0} y={EW_T - PAVE} width={W} height={ROAD_W + PAVE * 2} fill="#2c313a" />}
 
-  const rafRef = useRef(null);
-  const stRef = useRef(simState);
-  const spawnTick = useRef(0);
-  stRef.current = simState;
+      {/* asphalt */}
+      <rect x={NS_L} y={0} width={ROAD_W} height={H} fill={asphalt} />
+      {inter && <rect x={0} y={EW_T} width={W} height={ROAD_W} fill={asphalt} />}
+      {inter && <rect x={NS_L} y={EW_T} width={ROAD_W} height={ROAD_W} fill="#282c34" />}
 
-  // ── Socket ─────────────────────────────────────────────────────────────────
-useEffect(() => {
-  const s = io("https://localhost:5000", {
-    withCredentials: true,
-    transports: ["websocket"],
-  });
-
-  s.on("connect", () => {
-    console.log("🟢 CONNECTED:", s.id); // 🔥 ADD THIS
-    setConnected(true);
-    setSocket(s);
-
-    try {
-      const c = localStorage.getItem("automationConfig");
-      if (c) s.emit("update_config", JSON.parse(c));
-    } catch {}
-  });
-
-  s.on("disconnect", () => {
-    console.log("🔴 DISCONNECTED");
-    setConnected(false);
-  });
-
-  s.on("connect_error", (err) => {
-    console.log("❌ SOCKET ERROR:", err.message); // 🔥 IMPORTANT
-  });
-
-  s.on("sim_update", (d) => {
-    setSimState(d);
-    setPerfData((p) => {
-      const n = [
-        ...p,
-        { t: new Date().toLocaleTimeString(), v: d.cleared, r: d.reward },
-      ];
-      return n.length > 30 ? n.slice(1) : n;
-    });
-  });
-
-  return () => s.close();
-}, []);
-
-  // ── Animation loop ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    const tick = () => {
-      const st = stRef.current;
-      spawnTick.current++;
-
-      setCars(prev => {
-        let next = [...prev];
-
-        // Spawn
-        if (st.isRunning && spawnTick.current % 50 === 0) {
-          const rate = st.spawnRate || 0.4;
-          const totalLanes = st.lanes || 4;
-          const modes = st.simMode === 'single' ? ['NS', 'SN'] : ['NS', 'SN', 'EW', 'WE'];
-          modes.forEach(dir => {
-            if (Math.random() < rate * 0.5) {
-              const laneIdx = Math.floor(Math.random() * totalLanes);
-              const sameLane = next.filter(c => c.direction === dir && c.lane === laneIdx);
-              const blocked = sameLane.some(c => Math.abs(c.pos - START_POS[dir]) < CAR_H + CAR_GAP + 10);
-              if (!blocked) next.push(makeCar(dir, totalLanes));
-            }
-          });
-        }
-
-        // Physics — per direction
-        ['NS', 'SN', 'EW', 'WE'].forEach(dir => {
-          const sign = SIGN[dir];
-          const isNS = dir === 'NS' || dir === 'SN';
-          const green = st.light === 0 ? isNS : !isNS;
-          const stopP = STOP_POS[dir];
-
-          // Sort: leader (furthest along) first
-          const lane = next
-            .filter(c => c.direction === dir)
-            .sort((a, b) => sign * (b.pos - a.pos));
-
-          lane.forEach((car, i) => {
-            const sameLaneCars = lane.filter(c => c.lane === car.lane);
-            const carIdxInLane = sameLaneCars.findIndex(c => c.id === car.id);
-            const leader = sameLaneCars[carIdxInLane - 1];
-            let maxPos = END_POS[dir];
-
-            // ── Red light: stop before stop line ──
-            if (!green) {
-              // Centre of car when front is at stopP
-              const maxCentre = stopP - sign * CAR_H / 2;
-              maxPos = sign > 0 ? Math.min(maxPos, maxCentre) : Math.max(maxPos, maxCentre);
-            }
-
-            // ── Car-following: maintain gap behind leader ──
-            if (leader) {
-              const leaderBack = leader.pos - sign * (CAR_H / 2);
-              const safeCentre = leaderBack - sign * (CAR_GAP + CAR_H / 2);
-              maxPos = sign > 0 ? Math.min(maxPos, safeCentre) : Math.max(maxPos, safeCentre);
-            }
-
-            const desired = car.pos + sign * car.speed;
-            const newPos = sign > 0 ? Math.min(desired, maxPos) : Math.max(desired, maxPos);
-
-            const ni = next.findIndex(c => c.id === car.id);
-            if (ni !== -1) next[ni] = { ...next[ni], pos: newPos, stopped: Math.abs(newPos - car.pos) < 0.05 };
-          });
-        });
-
-        // Remove off-screen
-        next = next.filter(c => {
-          const s = SIGN[c.direction];
-          return s > 0 ? c.pos < END_POS[c.direction] + 10 : c.pos > END_POS[c.direction] - 10;
-        });
-
-        return next;
-      });
-
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, []);
-
-  const onStartPause = () => { if (!socket) return; simState.isRunning ? socket.emit('pause_sim') : socket.emit('start_sim'); };
-  const onReset = () => { if (!socket) return; socket.emit('reset_sim'); setCars([]); };
-  const onSpawn = e => { if (!socket) return; socket.emit('set_spawn_rate', parseFloat(e.target.value)); };
-  const onSource = e => { if (!socket) return; socket.emit('set_demand_source', e.target.value); };
-  const onSpeed = e => { if (!socket) return; socket.emit('set_speed', parseInt(e.target.value, 10)); };
-  const usingRealDemand = !!simState.demandSource && simState.demandSource !== 'synthetic';
-
-  const nsGreen = simState.light === 0;
-  const ewGreen = !nsGreen;
-
-  return (
-    <div className="cyber-container">
-
-      {/* ── SIDEBAR ─────────────────────────────────────────────────────────── */}
-      <div className="dashboard-sidebar">
-        <div className="dashboard-header">
-          <h1 className="cyber-title">SMART CITY AI</h1>
-          <p className="cyber-subtitle">Q-Learning Traffic Control</p>
-          <div className={`status-badge ${connected ? 'online' : 'offline'}`}>
-            <div className="pulse-dot" />
-            {connected ? 'LIVE CONNECTION' : 'DISCONNECTED'}
-          </div>
-        </div>
-
-        <div className="control-panel glass-panel">
-          <h3 className="panel-title">SIMULATION CONTROLS</h3>
-            {simState.sources && (
-            <div className="slider-wrapper">
-              <div className="slider-header">
-                <label>TRAFFIC DEMAND</label>
-                <span className="slider-value">{simState.simTime}</span>
-              </div>
-              <select className="cyber-select" value={simState.demandSource} onChange={onSource} disabled={!connected}>
-                {simState.sources.map(src => (
-                  <option key={src} value={src}>
-                    {src === 'synthetic' ? 'Synthetic (random)' : src === 'profile' ? 'Pune - average day' : `Pune - ${src.slice(4)}`}
-                  </option>
-                ))}
-              </select>
-              {usingRealDemand && (
-                <div className="demand-readout">
-                  N-S {simState.rateNS} veh/s · E-W {simState.rateEW} veh/s
-                </div>
-              )}
-              <div className="slider-header" style={{ marginTop: '1rem', marginBottom: 0 }}>
-                <label>SIM SPEED</label>
-                <select className="cyber-select" style={{ width: 'auto' }} value={simState.speed} onChange={onSpeed} disabled={!connected}>
-                  {[1, 5, 10, 30, 60].map(v => <option key={v} value={v}>{v}x</option>)}
-                </select>
-              </div>
-            </div>
-          )}
-          <div className="slider-wrapper">
-            <div className="slider-header">
-              <label>SPAWN RATE</label>
-              <span className="slider-value">{Math.round((simState.spawnRate || 0.4) * 100)}%</span>
-            </div>
-            <input type="range" min="0.1" max="1.0" step="0.05"
-              value={simState.spawnRate || 0.4} onChange={onSpawn}
-              disabled={!connected || usingRealDemand} className="cyber-slider" />
-          </div>
-          <div className="button-group">
-            <button className={`cyber-btn ${!simState.isRunning ? 'action-start' : 'action-pause'}`}
-              disabled={!connected} onClick={onStartPause}>
-              {simState.isRunning ? 'PAUSE' : 'START'}
-            </button>
-            <button className="cyber-btn action-reset" disabled={!connected} onClick={onReset}>RESET</button>
-          </div>
-        </div>
-
-        <div className="glass-panel" style={{ padding: '1.2rem 1.5rem', marginBottom: '1rem' }}>
-          <h3 className="panel-title" style={{ marginBottom: '1rem' }}>SIGNAL STATUS</h3>
-          <div style={{ display: 'flex', justifyContent: 'space-around' }}>
-            {[['N ↕ S', nsGreen], ['E ↔ W', ewGreen]].map(([lbl, g]) => (
-              <div key={lbl} style={{ textAlign: 'center' }}>
-                <div style={{
-                  width: 18, height: 18, borderRadius: '50%', margin: '0 auto 5px',
-                  background: g ? '#00e676' : '#440000', boxShadow: g ? '0 0 12px #00e676' : 'none', transition: 'all 0.4s'
-                }} />
-                <div style={{ fontSize: '0.7rem', color: '#8A92A6', letterSpacing: '1px' }}>{lbl}</div>
-                <div style={{ fontSize: '0.78rem', fontWeight: 700, color: g ? '#00e676' : '#ff1744', marginTop: 3 }}>
-                  {g ? 'GREEN' : 'RED'}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="metrics-panel">
-          <div className="metric-box glass-panel">
-            <span className="metric-label">N–S QUEUE</span>
-            <span className="metric-value">{simState.nsQueue || 0}</span>
-          </div>
-          <div className="metric-box glass-panel">
-            <span className="metric-label">E–W QUEUE</span>
-            <span className="metric-value">{simState.ewQueue || 0}</span>
-          </div>
-          <div className="metric-box highlight glass-panel">
-            <span className="metric-label">THROUGHPUT</span>
-            <span className="metric-value glowing-text">{simState.cleared || 0} <span className="unit">VEH</span></span>
-          </div>
-        </div>
-
-        <div className="glass-panel" style={{ padding: '1.2rem 1.5rem', marginBottom: '1rem' }}>
-          <h3 className="panel-title" style={{ marginBottom: '1rem', color: '#00f2fe' }}>RL LEARNING METRICS</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <div className="metric-box" style={{ background: 'rgba(0,242,254,0.05)', border: '1px solid rgba(0,242,254,0.1)' }}>
-              <span className="metric-label" style={{ fontSize: '0.6rem' }}>STEP REWARD</span>
-              <span className="metric-value" style={{ fontSize: '1.2rem', color: simState.reward >= 0 ? '#00e676' : '#ff1744' }}>
-                {simState.reward?.toFixed(1) || 0}
-              </span>
-            </div>
-            <div className="metric-box" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
-              <span className="metric-label" style={{ fontSize: '0.6rem' }}>LEARNING PROGRESS</span>
-              <span className="metric-value" style={{ fontSize: '1.2rem', color: '#f5dfa0' }}>
-                {Math.abs(simState.cumulativeReward || 0) > 1000 
-                  ? (simState.cumulativeReward / 1000).toFixed(1) + 'k' 
-                  : simState.cumulativeReward?.toFixed(0) || 0}
-              </span>
-            </div>
-          </div>
-          <div style={{ marginTop: '1rem' }}>
-             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: '#8A92A6', marginBottom: '4px' }}>
-                <span>AGENT EFFICIENCY</span>
-                <span>{Math.max(0, Math.min(100, 100 + (simState.reward || 0) * 5)).toFixed(0)}%</span>
-             </div>
-             <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-                <div style={{ 
-                  width: `${Math.max(0, Math.min(100, 100 + (simState.reward || 0) * 5))}%`, 
-                  height: '100%', 
-                  background: '#00f2fe',
-                  transition: 'width 0.4s ease'
-                }} />
-             </div>
-          </div>
-        </div>
-
-        <div className="chart-panel glass-panel" style={{ height: 210, marginTop: '1rem', padding: '1rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-            <h3 className="panel-title" style={{ fontSize: '0.7rem' }}>PERFORMANCE ANALYTICS</h3>
-            <div style={{ display: 'flex', gap: '10px' }}>
-               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#00f2fe' }} />
-                  <span style={{ fontSize: '0.5rem', color: '#8A92A6' }}>FLOW</span>
-               </div>
-               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#ff1744' }} />
-                  <span style={{ fontSize: '0.5rem', color: '#8A92A6' }}>REWARD</span>
-               </div>
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height="80%">
-            <LineChart data={perfData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-              <XAxis dataKey="t" hide />
-              <YAxis yAxisId="left" stroke="#6c7086" fontSize={10} />
-              <YAxis yAxisId="right" orientation="right" stroke="#6c7086" fontSize={10} />
-              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid rgba(255,255,255,0.1)', fontSize: '0.8rem' }} itemStyle={{ fontSize: '0.7rem' }} />
-              <Line yAxisId="left" type="monotone" dataKey="v" stroke="#00f2fe" strokeWidth={2} dot={false} isAnimationActive={false} name="Throughput" />
-              <Line yAxisId="right" type="monotone" dataKey="r" stroke="#ff1744" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Reward" strokeDasharray="3 3" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* ── CANVAS ──────────────────────────────────────────────────────────── */}
-      <div className="simulation-canvas">
-        <svg viewBox={`0 0 ${W} ${H}`} className="intersection-svg">
-          <defs>
-            <filter id="carShadow">
-              <feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.3" />
-            </filter>
-          </defs>
-
-          {/* ── BACKGROUND (light warm city) ── */}
-          <rect width={W} height={H} fill="#d4cec8" />
-
-          {/* ── CITY BLOCKS ── */}
-          {[
-            [0, 0, ROAD_NS_LEFT - 10, ROAD_EW_TOP - 10],
-            [ROAD_NS_RIGHT + 10, 0, W - ROAD_NS_RIGHT - 10, ROAD_EW_TOP - 10],
-            [0, ROAD_EW_BOT + 10, ROAD_NS_LEFT - 10, H - ROAD_EW_BOT - 10],
-            [ROAD_NS_RIGHT + 10, ROAD_EW_BOT + 10, W - ROAD_NS_RIGHT - 10, H - ROAD_EW_BOT - 10],
-          ].map(([bx, by, bw, bh], qi) => (
-            <g key={qi}>
-              <rect x={bx} y={by} width={bw} height={bh} fill="#ccc5bd" />
-              {/* 4 buildings per block */}
-              {[
-                [bx + bw * 0.06, by + bh * 0.06, bw * 0.40, bh * 0.40],
-                [bx + bw * 0.54, by + bh * 0.06, bw * 0.40, bh * 0.40],
-                [bx + bw * 0.06, by + bh * 0.54, bw * 0.40, bh * 0.40],
-                [bx + bw * 0.54, by + bh * 0.54, bw * 0.40, bh * 0.40],
-              ].map(([rx, ry, rw, rh], bi) =>
-                rw > 12 && rh > 12 ? (
-                  <g key={bi}>
-                    <rect x={rx} y={ry} width={rw} height={rh}
-                      fill={['#aec6e8', '#f5dfa0', '#b8ddb8', '#f0bfbf'][bi]}
-                      stroke="#9e968e" strokeWidth={1} rx={2} />
-                    {rw > 28 && rh > 28 && Array.from({ length: Math.floor(rh / 13) }).map((_, wi) =>
-                      Array.from({ length: Math.floor(rw / 13) }).map((_, wj) => (
-                        <rect key={`${wi}-${wj}`}
-                          x={rx + 4 + wj * 13} y={ry + 4 + wi * 13}
-                          width={7} height={8} rx={1}
-                          fill="rgba(255,255,255,0.6)" stroke="rgba(0,0,0,0.07)" strokeWidth={0.5} />
-                      ))
-                    )}
-                  </g>
-                ) : null
-              )}
+      {/* centre lines + lane dividers */}
+      {vSegs.map(([a, b], i) => (
+        <g key={`v${i}`}>
+          <line x1={CX - 1.8} x2={CX - 1.8} y1={a} y2={b} stroke={yellow} strokeWidth={1.4} />
+          <line x1={CX + 1.8} x2={CX + 1.8} y1={a} y2={b} stroke={yellow} strokeWidth={1.4} />
+          {dividers.map((o) => (
+            <g key={o}>
+              <line x1={CX + o} x2={CX + o} y1={a} y2={b} stroke={stripe} strokeWidth={1.5} strokeDasharray={dash} />
+              <line x1={CX - o} x2={CX - o} y1={a} y2={b} stroke={stripe} strokeWidth={1.5} strokeDasharray={dash} />
             </g>
           ))}
+        </g>
+      ))}
+      {hSegs.map(([a, b], i) => (
+        <g key={`h${i}`}>
+          <line y1={CY - 1.8} y2={CY - 1.8} x1={a} x2={b} stroke={yellow} strokeWidth={1.4} />
+          <line y1={CY + 1.8} y2={CY + 1.8} x1={a} x2={b} stroke={yellow} strokeWidth={1.4} />
+          {dividers.map((o) => (
+            <g key={o}>
+              <line y1={CY + o} y2={CY + o} x1={a} x2={b} stroke={stripe} strokeWidth={1.5} strokeDasharray={dash} />
+              <line y1={CY - o} y2={CY - o} x1={a} x2={b} stroke={stripe} strokeWidth={1.5} strokeDasharray={dash} />
+            </g>
+          ))}
+        </g>
+      ))}
 
-          {/* ── KERB/PAVEMENT STRIPS ── */}
-          <rect x={ROAD_NS_LEFT - 10} y={0} width={10} height={H} fill="#bab3aa" />
-          <rect x={ROAD_NS_RIGHT} y={0} width={10} height={H} fill="#bab3aa" />
-          {simState.simMode === 'intersection' && (
-            <>
-              <rect x={0} y={ROAD_EW_TOP - 10} width={W} height={10} fill="#bab3aa" />
-              <rect x={0} y={ROAD_EW_BOT} width={W} height={10} fill="#bab3aa" />
-            </>
+      {/* edge lines */}
+      <line x1={NS_L} x2={NS_L} y1={0} y2={H} stroke="rgba(255,255,255,0.18)" strokeWidth={2} />
+      <line x1={NS_R} x2={NS_R} y1={0} y2={H} stroke="rgba(255,255,255,0.18)" strokeWidth={2} />
+      {inter && (
+        <>
+          <line y1={EW_T} y2={EW_T} x1={0} x2={W} stroke="rgba(255,255,255,0.18)" strokeWidth={2} />
+          <line y1={EW_B} y2={EW_B} x1={0} x2={W} stroke="rgba(255,255,255,0.18)" strokeWidth={2} />
+          <rect x={NS_L} y={EW_T} width={ROAD_W} height={ROAD_W} fill="#282c34" />
+        </>
+      )}
+
+      {/* zebra crossings */}
+      {Array.from({ length: 8 }, (_, i) => NS_L + 7 + i * 17).map((x) => (
+        <g key={x} fill="rgba(255,255,255,0.3)">
+          <rect x={x} y={EW_T - CROSS} width={9} height={18} rx={1} />
+          <rect x={x} y={EW_B + 6} width={9} height={18} rx={1} />
+        </g>
+      ))}
+      {inter && Array.from({ length: 8 }, (_, i) => EW_T + 7 + i * 17).map((y) => (
+        <g key={y} fill="rgba(255,255,255,0.3)">
+          <rect x={NS_L - CROSS} y={y} width={18} height={9} rx={1} />
+          <rect x={NS_R + 6} y={y} width={18} height={9} rx={1} />
+        </g>
+      ))}
+
+      {/* stop lines (only across the incoming half) */}
+      <g stroke="rgba(255,255,255,0.85)" strokeWidth={3}>
+        <line x1={CX} x2={NS_R} y1={STOP_POS.NS} y2={STOP_POS.NS} />
+        <line x1={NS_L} x2={CX} y1={STOP_POS.SN} y2={STOP_POS.SN} />
+        {inter && <line x1={STOP_POS.EW} x2={STOP_POS.EW} y1={EW_T} y2={CY} />}
+        {inter && <line x1={STOP_POS.WE} x2={STOP_POS.WE} y1={CY} y2={EW_B} />}
+      </g>
+    </g>
+  );
+});
+
+// ─── Signal heads on the kerb, one per approach ───
+function Head({ x, y, horiz, state }) {
+  const w = horiz ? 46 : 18, h = horiz ? 18 : 46;
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect x={-w / 2} y={-h / 2} width={w} height={h} rx={9} fill="#0a0b0e" stroke="#3a404b" strokeWidth={1.5} />
+      {['red', 'amber', 'green'].map((c, i) => {
+        const o = (i - 1) * 14;
+        const on = state === c;
+        return (
+          <circle key={c} cx={horiz ? o : 0} cy={horiz ? 0 : o} r={5} fill={on ? LAMP[c] : '#1b1e24'}
+            style={on ? { filter: `drop-shadow(0 0 5px ${LAMP[c]})` } : undefined} />
+        );
+      })}
+    </g>
+  );
+}
+
+function Signals({ mode, ns, ew }) {
+  return (
+    <g>
+      <Head x={NS_R + PAVE / 2} y={STOP_POS.NS - 30} state={ns} />
+      <Head x={NS_L - PAVE / 2} y={STOP_POS.SN + 30} state={ns} />
+      {mode === 'intersection' && (
+        <>
+          <Head horiz x={STOP_POS.EW - 30} y={EW_T - PAVE / 2} state={ew} />
+          <Head horiz x={STOP_POS.WE + 30} y={EW_B + PAVE / 2} state={ew} />
+        </>
+      )}
+    </g>
+  );
+}
+
+// ─── Queue tags (the server's real queue numbers) ───
+function QueueTag({ x, y, label, n, max }) {
+  const ratio = Math.min(1, n / Math.max(1, max));
+  const tone = ratio < 0.6 ? LAMP.green : ratio < 0.85 ? LAMP.amber : LAMP.red;
+  return (
+    <g transform={`translate(${x} ${y})`}>
+      <rect width={122} height={54} rx={8} fill="rgba(12,14,18,0.9)" stroke="#2c323c" />
+      <text x={12} y={19} fontSize={12.5} fill="#8b94a2" fontFamily={FONT}>{label}</text>
+      <text x={12} y={39} fontSize={22} fontWeight={600} fill="#e8ebf0" fontFamily={FONT_NUM}>
+        {n}<tspan fontSize={12.5} fontWeight={400} fill="#8b94a2" fontFamily={FONT}> waiting</tspan>
+      </text>
+      <rect x={12} y={45} width={98} height={3} rx={1.5} fill="#1d2128" />
+      <rect x={12} y={45} width={98 * ratio} height={3} rx={1.5} fill={tone} />
+    </g>
+  );
+}
+
+// ─── Cars ───
+function Car({ c, lanes }) {
+  const lc = laneCenter(c.dir, c.lane, lanes);
+  const horiz = c.dir === 'EW' || c.dir === 'WE';
+  const x = horiz ? c.pos : lc;
+  const y = horiz ? lc : c.pos;
+  const tail = c.braking ? '#ff3b30' : '#7d2320';
+  return (
+    <g transform={`translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${ROT[c.dir]})`}>
+      <path d="M-9 -19 L-16 -52 L16 -52 L9 -19Z" fill="url(#beam)" />
+      <rect x={-9} y={-16} width={22} height={38} rx={6} fill="rgba(0,0,0,0.35)" />
+      <rect x={-11} y={-19} width={22} height={38} rx={6} fill={c.color} />
+      <rect x={-8} y={-11} width={16} height={7} rx={2} fill="#0b0f14" opacity={0.8} />
+      <rect x={-8} y={-2} width={16} height={11} rx={3} fill="rgba(0,0,0,0.22)" />
+      <rect x={-7} y={11} width={14} height={4} rx={1.5} fill="#0b0f14" opacity={0.7} />
+      <circle cx={-7} cy={-17.2} r={2.2} fill="#fff6cf" />
+      <circle cx={7} cy={-17.2} r={2.2} fill="#fff6cf" />
+      {c.braking && <rect x={-11} y={18.5} width={22} height={5} rx={2.5} fill="#ff3b30" opacity={0.35} />}
+      <rect x={-9.5} y={16.5} width={5} height={2.4} rx={1} fill={tail} />
+      <rect x={4.5} y={16.5} width={5} height={2.4} rx={1} fill={tail} />
+    </g>
+  );
+}
+
+/** Owns the animation loop. Only this small layer re-renders every frame, not the whole page. */
+function CarsLayer({ worldRef }) {
+  const [, redraw] = useReducer((n) => n + 1, 0);
+  useEffect(() => {
+    let raf;
+    let last = performance.now();
+    const loop = (now) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      if (stepWorld(worldRef.current, dt, now)) redraw();
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [worldRef]);
+
+  const w = worldRef.current;
+  return <g>{w.cars.map((c) => <Car key={c.id} c={c} lanes={w.lanes} />)}</g>;
+}
+
+// ─── helpers ───
+const fmtBig = (n = 0) => (Math.abs(n) >= 1000 ? `${(n / 1000).toFixed(1)}k` : Math.round(n));
+const sourceLabel = (s) =>
+  s === 'synthetic' ? 'Random arrivals' : s === 'profile' ? 'Pune, average day' : `Pune, ${String(s).slice(4)}`;
+
+// ─── page ───
+export default function TrafficSimulation() {
+  const [sim, setSim] = useState({
+    nsQueue: 0, ewQueue: 0, light: 0, cleared: 0, reward: 0, cumulativeReward: 0,
+    isRunning: false, spawnRate: 0.4, simMode: 'intersection', lanes: 4, speed: 1,
+    lostLeft: 0, lostTime: 3, timeInPhase: 0, minGreen: 5, maxQueue: 10,
+  });
+  const [perf, setPerf] = useState([]);
+  const [connected, setConnected] = useState(false);
+  const socketRef = useRef(null);
+  const worldRef = useRef(null);
+  const tickRef = useRef(0);
+  if (!worldRef.current) worldRef.current = makeWorld();
+
+  useEffect(() => {
+    const s = io(SOCKET_URL, { withCredentials: true, transports: ['websocket'] });
+    socketRef.current = s;
+
+    s.on('connect', () => {
+      setConnected(true);
+      try {
+        const c = localStorage.getItem('automationConfig');
+        if (c) s.emit('update_config', JSON.parse(c));
+      } catch { /* ignore a corrupt saved config */ }
+    });
+    s.on('disconnect', () => setConnected(false));
+    s.on('connect_error', (err) => console.warn('Socket error:', err.message));
+
+    s.on('sim_update', (d) => {
+      applyUpdate(worldRef.current, d, performance.now());
+      setSim((p) => ({ ...p, ...d }));
+      if (d.events) {
+        tickRef.current += 1;
+        const point = { i: tickRef.current, v: d.cleared, r: d.reward };
+        setPerf((p) => [...p, point].slice(-60));
+      }
+    });
+
+    return () => { s.close(); socketRef.current = null; };
+  }, []);
+
+  const emit = (ev, payload) => socketRef.current?.emit(ev, payload);
+  const onStartPause = () => emit(sim.isRunning ? 'pause_sim' : 'start_sim');
+  const onReset = () => { emit('reset_sim'); setPerf([]); tickRef.current = 0; };
+
+  const single = sim.simMode === 'single';
+  const nsState = lampState(0, sim);
+  const ewState = lampState(1, sim);
+  const realDemand = !!sim.demandSource && sim.demandSource !== 'synthetic';
+  const clearing = (sim.lostLeft || 0) > 0;
+  const phaseColor = clearing ? LAMP.amber : LAMP.green;
+  const phaseText = clearing
+    ? 'Clearing the junction'
+    : sim.light === 0 ? 'North–South green' : single ? 'North–South red' : 'East–West green';
+  const minGreenPct = Math.min(100, ((sim.timeInPhase || 0) / Math.max(1, sim.minGreen || 5)) * 100);
+  const qColor = (n) => {
+    const r = n / Math.max(1, sim.maxQueue || 10);
+    return r < 0.6 ? LAMP.green : r < 0.85 ? LAMP.amber : LAMP.red;
+  };
+
+  const rows = [
+    { key: 'ns', name: 'North–South', state: nsState, q: sim.nsQueue || 0 },
+    ...(single ? [] : [{ key: 'ew', name: 'East–West', state: ewState, q: sim.ewQueue || 0 }]),
+  ];
+
+  return (
+    <div className="ts-app">
+      {/* ── Sidebar ── */}
+      <aside className="ts-side">
+        <div className="ts-head">
+          <div>
+            <h1 className="ts-title">Signal control</h1>
+            <p className="ts-sub">Q-learning agent, live simulation</p>
+          </div>
+          <span className={`ts-conn ${connected ? 'on' : 'off'}`}><i />{connected ? 'Connected' : 'Offline'}</span>
+        </div>
+
+        <section className="ts-card">
+          <h2 className="ts-h">Signals</h2>
+          {rows.map((r) => (
+            <div className="ts-sig" key={r.key}>
+              <div className={`ts-head-lamp ${r.state}`}><b /><b /><b /></div>
+              <span className="ts-sig-name">{r.name}</span>
+              <span className={`ts-sig-state ts-state-${r.state}`}>{STATE_TEXT[r.state]}</span>
+            </div>
+          ))}
+          <div className="ts-phase">
+            <div className="ts-phase-row">
+              <span>Time in this phase</span>
+              <strong className="ts-num">{sim.timeInPhase || 0}s</strong>
+            </div>
+            <div className="ts-bar"><div style={{ width: `${minGreenPct}%`, background: minGreenPct >= 100 ? LAMP.green : '#5d6675' }} /></div>
+            <div className="ts-hint">The agent can switch after {sim.minGreen || 5}s of green.</div>
+          </div>
+        </section>
+
+        <section className="ts-card">
+          <h2 className="ts-h">Queues</h2>
+          {rows.map((r) => (
+            <div className="ts-meter" key={r.key}>
+              <div className="ts-meter-top">
+                <span>{r.name}</span>
+                <b className="ts-num">{r.q}<small>of {sim.maxQueue}</small></b>
+              </div>
+              <div className="ts-bar"><div style={{ width: `${Math.min(100, (r.q / Math.max(1, sim.maxQueue)) * 100)}%`, background: qColor(r.q) }} /></div>
+            </div>
+          ))}
+        </section>
+
+        <section className="ts-card">
+          <h2 className="ts-h">Controls</h2>
+
+          {sim.sources && (
+            <div className="ts-field">
+              <label className="ts-label" htmlFor="ts-demand">Traffic demand</label>
+              <select id="ts-demand" className="ts-select" value={sim.demandSource}
+                onChange={(e) => emit('set_demand_source', e.target.value)} disabled={!connected}>
+                {sim.sources.map((s) => <option key={s} value={s}>{sourceLabel(s)}</option>)}
+              </select>
+              {realDemand && (
+                <p className="ts-hint">North–South {sim.rateNS} veh/s, East–West {sim.rateEW} veh/s</p>
+              )}
+            </div>
           )}
 
-          {/* ── BLACK ROADS ── */}
-          <rect x={ROAD_NS_LEFT} y={0} width={ROAD_W} height={H} fill="#111111" />
-          {simState.simMode === 'intersection' && (
-            <rect x="0" y={ROAD_EW_TOP} width={W} height={ROAD_W} fill="#111111" />
-          )}
-
-          {/* ── LANE MARKINGS ── */}
-          {/* NS center separator */}
-          <line x1={CX - 2} y1={0} x2={CX - 2} y2={H} stroke="#e6c200" strokeWidth={1} opacity="0.6" />
-          <line x1={CX + 2} y1={0} x2={CX + 2} y2={H} stroke="#e6c200" strokeWidth={1} opacity="0.6" />
-          
-          {/* NS Lane dividers */}
-          {Array.from({ length: (simState.lanes || 4) - 1 }).map((_, li) => {
-            const step = (ROAD_W / 2) / (simState.lanes || 4);
-            const offset = (li + 1) * step;
-            return (
-              <g key={`nsl${li}`}>
-                {Array.from({ length: 16 }).map((_, i) => (
-                  <React.Fragment key={i}>
-                    <rect x={CX + offset - 1} y={i * 56 + 6} width={2} height={28} fill="rgba(255,255,255,0.25)" />
-                    <rect x={CX - offset - 1} y={i * 56 + 6} width={2} height={28} fill="rgba(255,255,255,0.25)" />
-                  </React.Fragment>
-                ))}
-              </g>
-            );
-          })}
-
-          {/* EW center separator */}
-          {simState.simMode === 'intersection' && (
-            <>
-              <line x1={0} y1={CY - 2} x2={W} y2={CY - 2} stroke="#e6c200" strokeWidth={1} opacity="0.6" />
-              <line x1={0} y1={CY + 2} x2={W} y2={CY + 2} stroke="#e6c200" strokeWidth={1} opacity="0.6" />
-
-              {/* EW Lane dividers */}
-              {Array.from({ length: (simState.lanes || 4) - 1 }).map((_, li) => {
-                const step = (ROAD_W / 2) / (simState.lanes || 4);
-                const offset = (li + 1) * step;
-                return (
-                  <g key={`ewl${li}`}>
-                    {Array.from({ length: 16 }).map((_, i) => (
-                      <React.Fragment key={i}>
-                        <rect x={i * 56 + 6} y={CY + offset - 1} width={28} height={2} fill="rgba(255,255,255,0.25)" />
-                        <rect x={i * 56 + 6} y={CY - offset - 1} width={28} height={2} fill="rgba(255,255,255,0.25)" />
-                      </React.Fragment>
-                    ))}
-                  </g>
-                );
-              })}
-            </>
-          )}
-
-          {/* Yellow edge kerb lines */}
-          <line x1={ROAD_NS_LEFT} y1={0} x2={ROAD_NS_LEFT} y2={H} stroke="#e6c200" strokeWidth={2.5} />
-          <line x1={ROAD_NS_RIGHT} y1={0} x2={ROAD_NS_RIGHT} y2={H} stroke="#e6c200" strokeWidth={2.5} />
-          {simState.simMode === 'intersection' && (
-            <>
-              <line x1={0} y1={ROAD_EW_TOP} x2={W} y2={ROAD_EW_TOP} stroke="#e6c200" strokeWidth={2.5} />
-              <line x1={0} y1={ROAD_EW_BOT} x2={W} y2={ROAD_EW_BOT} stroke="#e6c200" strokeWidth={2.5} />
-            </>
-          )}
-
-          {/* ── INTERSECTION ── */}
-          {simState.simMode === 'intersection' ? (
-            <>
-              <rect x={IX1} y={IY1} width={IX2 - IX1} height={IY2 - IY1} fill="#111111" />
-              {/* Yellow hatch pattern */}
-              {Array.from({ length: 10 }).map((_, i) => (
-                <line key={`h1${i}`} x1={IX1 + i * 16} y1={IY1} x2={IX1} y2={IY1 + i * 16} stroke="rgba(230,194,0,0.18)" strokeWidth={1.5} />
+          <div className="ts-field">
+            <div className="ts-label"><span>Simulation speed</span><b>{sim.speed}x</b></div>
+            <div className="ts-seg" role="group" aria-label="Simulation speed">
+              {SPEEDS.map((v) => (
+                <button key={v} aria-pressed={sim.speed === v} disabled={!connected}
+                  onClick={() => emit('set_speed', v)}>{v}x</button>
               ))}
-              {Array.from({ length: 10 }).map((_, i) => (
-                <line key={`h2${i}`} x1={IX1 + i * 16} y1={IY2} x2={IX2} y2={IY1 + i * 16} stroke="rgba(230,194,0,0.18)" strokeWidth={1.5} />
-              ))}
-            </>
-          ) : (
-             <rect x={IX1} y={IY1} width={IX2 - IX1} height={IY2 - IY1} fill="#111111" />
-          )}
+            </div>
+            {sim.speed >= 10 && (
+              <p className="ts-hint">At this speed the map shows a sample of the traffic. The numbers stay exact.</p>
+            )}
+          </div>
 
-          {/* ── CROSSWALKS ── */}
-          {[0, 1, 2, 3, 4].map(i => <rect key={`cN${i}`} x={IX1 + 10 + i * 24} y={IY1 - 20} width={14} height={18} fill="rgba(255,255,255,0.2)" rx={1} />)}
-          {[0, 1, 2, 3, 4].map(i => <rect key={`cS${i}`} x={IX1 + 10 + i * 24} y={IY2 + 2} width={14} height={18} fill="rgba(255,255,255,0.2)" rx={1} />)}
-          {simState.simMode === 'intersection' && (
-            <>
-              {[0, 1, 2, 3, 4].map(i => <rect key={`cW${i}`} x={IX1 - 20} y={IY1 + 10 + i * 24} width={18} height={14} fill="rgba(255,255,255,0.2)" rx={1} />)}
-              {[0, 1, 2, 3, 4].map(i => <rect key={`cE${i}`} x={IX2 + 2} y={IY1 + 10 + i * 24} width={18} height={14} fill="rgba(255,255,255,0.2)" rx={1} />)}
-            </>
-          )}
+          <div className="ts-field">
+            <div className="ts-label">
+              <label htmlFor="ts-spawn">Arrival rate</label>
+              <b>{realDemand ? 'From data' : `${Math.round((sim.spawnRate || 0.4) * 100)}%`}</b>
+            </div>
+            <input id="ts-spawn" className="ts-range" type="range" min="0.1" max="1" step="0.05"
+              value={sim.spawnRate || 0.4} disabled={!connected || realDemand}
+              onChange={(e) => emit('set_spawn_rate', parseFloat(e.target.value))} />
+          </div>
 
-          {/* ── STOP LINES ── */}
-          <line x1={ROAD_NS_LEFT} y1={STOP_POS.NS} x2={ROAD_NS_RIGHT} y2={STOP_POS.NS} stroke="white" strokeWidth={3} opacity="0.75" />
-          <line x1={ROAD_NS_LEFT} y1={STOP_POS.SN} x2={ROAD_NS_RIGHT} y2={STOP_POS.SN} stroke="white" strokeWidth={3} opacity="0.75" />
-          {simState.simMode === 'intersection' && (
-            <>
-              <line x1={STOP_POS.EW} y1={ROAD_EW_TOP} x2={STOP_POS.EW} y2={ROAD_EW_BOT} stroke="white" strokeWidth={3} opacity="0.75" />
-              <line x1={STOP_POS.WE} y1={ROAD_EW_TOP} x2={STOP_POS.WE} y2={ROAD_EW_BOT} stroke="white" strokeWidth={3} opacity="0.75" />
-            </>
+          <div className="ts-actions">
+            <button className={`ts-btn ${sim.isRunning ? 'pause' : 'go'}`} disabled={!connected} onClick={onStartPause}>
+              {sim.isRunning ? 'Pause' : 'Start'}
+            </button>
+            <button className="ts-btn" disabled={!connected} onClick={onReset}>Reset</button>
+          </div>
+          {!connected && (
+            <p className="ts-hint ts-offline">Can’t reach the simulation server. Start the backend, then reload this page.</p>
           )}
+        </section>
 
-          {/* ── TRAFFIC LIGHT POLES ── */}
-          {simState.simMode === 'intersection' ? (
-            <>
-              <Pole x={IX1 - 28} y={IY1 - 8} green={ewGreen} />   {/* NW – controls E→ */}
-              <Pole x={IX2 + 28} y={IY1 - 8} green={nsGreen} />   {/* NE – controls ↓S */}
-              <Pole x={IX1 - 28} y={IY2 + 8} green={nsGreen} />   {/* SW – controls ↑N */}
-              <Pole x={IX2 + 28} y={IY2 + 8} green={ewGreen} />   {/* SE – controls ←W */}
-            </>
-          ) : (
-            <>
-              <Pole x={IX2 + 28} y={IY1 - 8} green={nsGreen} />   {/* NE – controls ↓S */}
-              <Pole x={IX1 - 28} y={IY2 + 8} green={nsGreen} />   {/* SW – controls ↑N */}
-            </>
-          )}
+        <section className="ts-card">
+          <h2 className="ts-h">Results</h2>
+          <div className="ts-stats">
+            <div className="ts-stat"><span>Vehicles cleared</span><b className="ts-num">{sim.cleared || 0}</b></div>
+            <div className="ts-stat"><span>Last step</span>
+              <b className={`ts-num ${(sim.reward || 0) >= 0 ? 'ts-pos' : 'ts-neg'}`}>{(sim.reward || 0).toFixed(1)}</b></div>
+            <div className="ts-stat"><span>Total reward</span>
+              <b className={`ts-num ${(sim.cumulativeReward || 0) >= 0 ? 'ts-pos' : 'ts-neg'}`}>{fmtBig(sim.cumulativeReward)}</b></div>
+          </div>
+          <div className="ts-legend">
+            <span><i style={{ background: LAMP.green }} />Cleared</span>
+            <span><i style={{ background: LAMP.amber }} />Step reward</span>
+          </div>
+          <div className="ts-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={perf} margin={{ top: 4, right: 4, bottom: 0, left: -18 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <XAxis dataKey="i" hide />
+                <YAxis yAxisId="l" stroke="#6b7482" fontSize={11} tickLine={false} axisLine={false} />
+                <YAxis yAxisId="r" orientation="right" stroke="#6b7482" fontSize={11} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{ background: '#0d0f13', border: '1px solid #262b34', borderRadius: 8, fontSize: 12 }}
+                  labelFormatter={() => ''} />
+                <Line yAxisId="l" type="monotone" dataKey="v" name="Cleared" stroke={LAMP.green} strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line yAxisId="r" type="monotone" dataKey="r" name="Step reward" stroke={LAMP.amber} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      </aside>
 
-          {/* ── CARS ── */}
-          <g filter="url(#carShadow)">
-            {cars.map(c => <CarShape key={c.id} car={c} totalLanes={simState.lanes || 4} />)}
-          </g>
-        </svg>
-      </div>
+      {/* ── Map ── */}
+      <main className="ts-stage">
+        <div className="ts-mapbar">
+          <div className="ts-clock">
+            {sim.simTime || '--:--'}
+            <small>{sourceLabel(sim.demandSource || 'synthetic')}</small>
+          </div>
+          <span className="ts-phase-chip"><i style={{ background: phaseColor }} />{phaseText}</span>
+        </div>
+
+        <div className="ts-map">
+          <svg viewBox={`0 0 ${W} ${H}`} role="img"
+            aria-label={`Traffic ${single ? 'road' : 'intersection'}: ${sim.nsQueue || 0} vehicles waiting north–south${single ? '' : `, ${sim.ewQueue || 0} east–west`}`}>
+            <defs>
+              <linearGradient id="beam" x1="0" y1="1" x2="0" y2="0">
+                <stop offset="0%" stopColor="#fff4c8" stopOpacity="0.16" />
+                <stop offset="100%" stopColor="#fff4c8" stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            <Scene mode={sim.simMode} lanes={sim.lanes || 4} />
+            <Signals mode={sim.simMode} ns={nsState} ew={ewState} />
+            <CarsLayer worldRef={worldRef} />
+            <QueueTag x={NS_L - PAVE - 12 - 122} y={16} label="North–South" n={sim.nsQueue || 0} max={sim.maxQueue || 10} />
+            {!single && <QueueTag x={16} y={EW_T - PAVE - 12 - 54} label="East–West" n={sim.ewQueue || 0} max={sim.maxQueue || 10} />}
+          </svg>
+        </div>
+      </main>
     </div>
   );
 }

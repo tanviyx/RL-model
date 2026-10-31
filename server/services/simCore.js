@@ -69,16 +69,19 @@ export function step(state, action, arrivals, cfg = DEFAULT_CFG) {
   }
   const clearBatch = Math.ceil(cfg.lanes / 2);
   let trafficCleared = 0;
+  let servedNS = 0, servedEW = 0; // per-axis, so the UI can animate exactly who was served
   if (serving && state.light === 0 && state.nsQueue > 0) {
     const n = Math.min(state.nsQueue, clearBatch);
     state.nsQueue -= n;
     trafficCleared += n;
+    servedNS = n;
     state.delaySum += sum(state.nsWait.splice(0, n));
   }
   if (serving && state.light === 1 && state.ewQueue > 0) {
     const n = Math.min(state.ewQueue, clearBatch);
     state.ewQueue -= n;
     trafficCleared += n;
+    servedEW = n;
     state.delaySum += sum(state.ewWait.splice(0, n));
   }
   state.cleared += trafficCleared;
@@ -91,15 +94,18 @@ export function step(state, action, arrivals, cfg = DEFAULT_CFG) {
   const nsArr = arrivals.ns | 0;
   const ewArr = intersection ? arrivals.ew | 0 : 0;
   state.arrived += nsArr + ewArr;
+  let acceptedNS = 0, acceptedEW = 0; // arrivals that actually joined a queue
   for (let i = 0; i < nsArr; i++) {
     if (state.nsQueue < cfg.maxQueue) {
       state.nsQueue++;
+      acceptedNS++;
       state.nsWait.push(0);
     } else state.dropped++;
   }
   for (let i = 0; i < ewArr; i++) {
     if (state.ewQueue < cfg.maxQueue) {
       state.ewQueue++;
+      acceptedEW++;
       state.ewWait.push(0);
     } else state.dropped++;
   }
@@ -119,7 +125,7 @@ export function step(state, action, arrivals, cfg = DEFAULT_CFG) {
   state.cumulativeReward += reward;
   state.queueSum += totalQueue;
 
-  return { switched, cleared: trafficCleared };
+  return { switched, cleared: trafficCleared, servedNS, servedEW, acceptedNS, acceptedEW };
 }
 
 /** Summary metrics for a finished run. Vehicles still queued count too, so a policy can't look good by leaving cars unserved. */
