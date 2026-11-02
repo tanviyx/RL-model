@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulation · SmartSignal</title>
+<link rel="stylesheet" href="/css/simulation.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/dashboard">SmartSignal</a>
+  <nav aria-label="Main">
+    <a href="/dashboard">Dashboard</a>
+    <a href="/simulation" aria-current="page">Simulation</a>
+    <a href="/simulation#monitoring">Monitoring</a>
+    <a href="/simulation#ai-control">AI control</a>
+  </nav>
+  <div class="user"><span id="who"></span><button id="logout" class="ghost" type="button">Log out</button></div>
+</header>
+
+<main class="layout">
+  <section class="stage" aria-label="Intersection view">
+    <div class="canvas-wrap">
+      <canvas id="scene" role="img" aria-label="Top-down view of a four-way intersection with vehicles and traffic signals"></canvas>
+      <div id="hint" class="hint">Press Start to begin</div>
+    </div>
+    <p class="note">Four-way intersection, 2 lanes per approach. Labels show queued vehicles per approach (N, S, E, W).</p>
+    <ul class="legend" aria-label="Overlay legend">
+      <li><i class="sw low"></i>Low density</li><li><i class="sw mid"></i>Moderate</li><li><i class="sw high"></i>High</li><li><i class="sw bar"></i>End of queue</li>
+    </ul>
+  </section>
+
+  <aside class="panel">
+    <div class="card">
+      <div class="row between"><h2>Controls</h2><span id="status" class="status" aria-live="polite">Ready</span></div>
+      <div class="buttons">
+        <button id="start" class="btn go" type="button">Start</button>
+        <button id="pause" class="btn wait" type="button" disabled>Pause</button>
+        <button id="reset" class="btn ghost" type="button">Reset</button>
+      </div>
+      <label>Traffic demand
+        <input id="demand" type="range" min="300" max="3500" step="100" value="1200">
+        <output id="demand-out" for="demand"></output>
+      </label>
+      <label>Simulation speed
+        <select id="speed"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select>
+      </label>
+      <label>Signal control
+        <select id="controller"><option value="fixed">Fixed-time (42 s green, 3 s yellow)</option><option value="dqn">AI agent (DQN, trained model)</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="overlay" checked> Show density and queue overlay</label>
+      <p class="tip">Tip: press Space to start or pause. Reset repeats the same traffic.</p>
+    </div>
+
+    <div class="card">
+      <div class="row between"><h2>Signals</h2><span><b id="phase-name">–</b> · <span id="phase-left"></span></span></div>
+      <ul id="approaches" class="approaches">
+        <li data-a="0"><span class="dot" data-state="R"></span><b>North</b><span class="state">Red</span><span class="bar" title="Queued vehicles"><i></i></span><span class="q">0</span></li>
+        <li data-a="1"><span class="dot" data-state="R"></span><b>South</b><span class="state">Red</span><span class="bar" title="Queued vehicles"><i></i></span><span class="q">0</span></li>
+        <li data-a="2"><span class="dot" data-state="R"></span><b>East</b><span class="state">Red</span><span class="bar" title="Queued vehicles"><i></i></span><span class="q">0</span></li>
+        <li data-a="3"><span class="dot" data-state="R"></span><b>West</b><span class="state">Red</span><span class="bar" title="Queued vehicles"><i></i></span><span class="q">0</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Live statistics</h2>
+      <dl class="stats">
+        <div><dt>Simulated time</dt><dd id="s-time">00:00</dd></div>
+        <div><dt>Vehicles on road</dt><dd id="s-road">0</dd></div>
+        <div><dt>Completed trips</dt><dd id="s-done">0</dd></div>
+        <div><dt>Avg wait (completed)</dt><dd id="s-wait">–</dd></div>
+        <div><dt>Longest current wait</dt><dd id="s-max">0 s</dd></div>
+        <div><dt>Vehicles queued</dt><dd id="s-queue">0</dd></div>
+      </dl>
+    </div>
+  </aside>
+</main>
+
+<section class="monitor" id="ai-control" aria-labelledby="ai-h">
+  <div class="mon-head"><h2 id="ai-h">AI signal control</h2><span class="live" id="ai-badge"><i></i><span id="ai-badge-text">Checking model&hellip;</span></span></div>
+  <p class="sub">The trained DQN reads the traffic state, recommends a phase and a green time, and the simulation obeys it. Every decision below came from the model.</p>
+  <div id="ai-error" class="alert" role="alert" hidden></div>
+
+  <div id="ai-idle" class="card idle">
+    <p>The fixed-time plan is running. Choose <b>AI agent (DQN, trained model)</b> under <i>Signal control</i> and the model takes over the signals.</p>
+    <button id="ai-use" class="btn go" type="button">Switch to AI agent</button>
+  </div>
+
+  <div id="ai-live" hidden>
+    <div class="ai-grid">
+      <div class="card">
+        <h3>Current decision</h3>
+        <p class="ai-title" id="ai-title">Waiting for the first decision</p>
+        <p class="sub" id="ai-meta"></p>
+        <p class="ai-stage"><span id="ai-stage">–</span></p>
+        <div class="bar big"><i id="ai-prog"></i></div>
+        <dl class="stats mini-stats">
+          <div><dt>Decisions</dt><dd id="ai-n">0</dd></div>
+          <div><dt>Phase switches</dt><dd id="ai-sw">0</dd></div>
+          <div><dt>Average green</dt><dd id="ai-avg">–</dd></div>
+          <div><dt>Fixed plan green</dt><dd>42 s</dd></div>
+        </dl>
+      </div>
+      <div class="card">
+        <h3>What the model scored (Q-values)</h3>
+        <p class="sub">Higher is better. The best action is the one the simulation applied.</p>
+        <ul class="qlist" id="ai-q"></ul>
+      </div>
+    </div>
+    <div class="ai-grid">
+      <div class="card">
+        <h3>Signal timings chosen over time</h3>
+        <p class="sub">One bar per decision, height = green seconds. Dashed line = the fixed 42 s plan.</p>
+        <canvas id="ai-chart" aria-label="Bar chart of green times chosen by the AI for the last 30 decisions"></canvas>
+        <ul class="legend"><li><i class="sw ns"></i>North&ndash;South green</li><li><i class="sw ew"></i>East&ndash;West green</li></ul>
+      </div>
+      <div class="card">
+        <h3>Recent decisions</h3>
+        <div class="table-wrap flat"><table id="ai-history"><thead><tr><th>#</th><th>Time</th><th>Phase</th><th>Green</th><th>Action</th><th>Queued</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+    <details class="card">
+      <summary>State sent to the model for the latest decision (35 values)</summary>
+      <div class="table-wrap flat"><table id="ai-state"><thead><tr><th>Lane</th><th>Queue</th><th>Vehicles</th><th>Waiting</th><th>Occupancy</th></tr></thead><tbody></tbody></table></div>
+      <p class="note left" id="ai-state-extra"></p>
+    </details>
+  </div>
+</section>
+
+<section class="monitor" id="monitoring" aria-labelledby="mon-h">
+  <div class="mon-head"><h2 id="mon-h">Real-time traffic monitoring</h2><span class="live" id="live"><i></i><span id="live-text">Ready</span></span></div>
+  <p class="sub">Updates about five times a second while the simulation runs. Density is vehicles per kilometre of lane; the throughput window is the last 5 simulated minutes.</p>
+
+  <h3>Signal status</h3>
+  <div class="sig-strip" id="sig-strip"></div>
+
+  <h3>Throughput and waiting</h3>
+  <div class="kpis">
+    <div class="kpi"><span>Throughput</span><b id="k-thru">0</b><small id="k-thru-sub">vehicles per hour</small></div>
+    <div class="kpi"><span>Completed trips</span><b id="k-done">0</b><small id="k-done-sub">of 0 entered</small></div>
+    <div class="kpi"><span>Average wait now</span><b id="k-wait">0 s</b><small id="k-wait-sub">longest 0 s</small></div>
+    <div class="kpi"><span>Vehicles queued</span><b id="k-queue">0</b><small id="k-queue-sub">longest queue 0 m</small></div>
+  </div>
+
+  <h3>Lanes</h3>
+  <div class="table-wrap">
+    <table id="lane-table">
+      <thead><tr><th>Lane</th><th>Vehicles</th><th>Density (veh/km)</th><th>Level</th><th>Queued</th><th>Queue length</th><th>Avg wait</th><th>Longest wait</th></tr></thead>
+      <tbody id="lane-rows"></tbody>
+      <tfoot><tr><th>All lanes</th><td id="t-count">0</td><td id="t-dens">0</td><td>–</td><td id="t-q">0</td><td id="t-qm">0 m</td><td id="t-wait">0 s</td><td id="t-max">0 s</td></tr></tfoot>
+    </table>
+  </div>
+  <p class="note left">Lane = approach and lane type. Kerb lane: straight and right. Inner lane: straight and left. Vehicles are counted from the map edge up to the intersection box (55 m).</p>
+
+  <h3>Trends (last 10 simulated minutes)</h3>
+  <div class="charts">
+    <figure><figcaption>Vehicles queued</figcaption><canvas id="ch-queue" aria-label="Line chart of vehicles queued over time"></canvas></figure>
+    <figure><figcaption>Throughput (vehicles per hour, 5-minute window)</figcaption><canvas id="ch-thru" aria-label="Line chart of throughput over time"></canvas></figure>
+  </div>
+</section>
+<script src="/js/simulation.js"></script>
+</body>
+</html>

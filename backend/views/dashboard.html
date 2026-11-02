@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard · SmartSignal</title>
+<style>
+body{margin:0;background:#ebe9e3;color:#1c2226;font-family:system-ui,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:16px 5vw;background:#2b3238;color:#fff}
+header img{width:32px;height:32px;border-radius:50%;vertical-align:middle;margin-right:8px}
+button{padding:8px 16px;border:1px solid #fff;border-radius:8px;background:transparent;color:#fff;cursor:pointer;font:inherit}
+main{max-width:800px;margin:48px auto;padding:0 5vw}
+.card{background:#fbfaf7;border:1px solid #cfccc3;border-radius:14px;padding:28px}
+</style></head>
+<body>
+<header><span id="who">…</span><button id="logout">Log out</button></header>
+<main><div class="card"><h1 id="hello">Welcome</h1>
+<p>You’re signed in. The simulation dashboard (Step 6.3) will appear here.</p></div></main>
+<script>
+(async () => {
+  const r = await fetch('/api/auth/me');
+  if (!r.ok) return (location.href = '/login');
+  const u = await r.json();
+  document.getElementById('hello').textContent = 'Welcome, ' + u.name;
+  const who = document.getElementById('who');
+  who.textContent = '';
+  if (u.avatar) { const i = document.createElement('img'); i.src = u.avatar; i.alt = ''; who.appendChild(i); }
+  who.appendChild(document.createTextNode(u.email));
+})();
+document.getElementById('logout').onclick = async () => {
+  const r = await fetch('/api/auth/logout', { method: 'POST' });
+  location.href = (await r.json()).redirect;
+};
+</script></body></html>

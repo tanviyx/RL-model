@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Adaptive Traffic Signal Control</title>
+<style>
+:root{--bg:#f6f8fb;--card:#fff;--text:#14202e;--muted:#5a6a7d;--accent:#272a29;--accent2:#e8f5ef;--border:#dde3ea;--btn-text:#fff;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e141b;--card:#161f29;--text:#e8eef5;--muted:#9fb0c2;--accent:#3ecf8e;--accent2:#12281f;--border:#26323f;--btn-text:#08130d;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0e141b;--card:#161f29;--text:#e8eef5;--muted:#9fb0c2;--accent:#3ecf8e;--accent2:#12281f;--border:#26323f;--btn-text:#08130d;color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:70px}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.6}
+nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 5vw;background:var(--card);border-bottom:1px solid var(--border)}
+.logo{font-weight:700}
+nav .links{display:flex;gap:6px;flex-wrap:wrap}
+nav a{color:var(--text);text-decoration:none;padding:7px 14px;border-radius:8px;font-size:.95rem}
+nav a:hover{background:var(--accent2)}
+nav a.cta{background:var(--accent);color:var(--btn-text);font-weight:600}
+section{padding:56px 5vw;max-width:1100px;margin:0 auto}
+.hero{text-align:center;padding-top:72px}
+.hero h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.15;margin:0 0 16px}
+.hero p{max-width:680px;margin:0 auto 26px;color:var(--muted);font-size:1.1rem}
+.btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn{padding:12px 26px;border-radius:10px;text-decoration:none;font-weight:600;border:1px solid var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--btn-text)}
+h2{font-size:1.7rem;margin:0 0 8px}
+.sub{color:var(--muted);margin:0 0 28px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px}
+.card h3{margin:0 0 6px;font-size:1.05rem}
+.card p{margin:0;color:var(--muted);font-size:.95rem}
+.icon{font-size:1.6rem;margin-bottom:8px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:22px 0}
+.stat{background:var(--accent2);border-radius:12px;padding:16px;text-align:center}
+.stat b{display:block;font-size:1.5rem;color:var(--accent)}
+.stat span{font-size:.85rem;color:var(--muted)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600}
+ol.flow{padding-left:20px;margin:0}
+ol.flow li{margin-bottom:8px}
+.credit{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:12px;padding:20px}
+.credit a{color:var(--accent)}
+footer{text-align:center;color:var(--muted);padding:30px 5vw 40px;font-size:.9rem;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo">🚦 SmartSignal</span>
+  <div class="links">
+    <a href="#home">Home</a>
+    <a href="/login">Login</a>
+    <a href="/register" class="cta">Register</a>
+  </div>
+</nav>
+
+<section class="hero" id="home">
+  <h1>Traffic signals that learn from the road</h1>
+  <p>Most signals run on a fixed timer, whatever the traffic looks like. SmartSignal uses a Deep Q-Network (DQN) to adjust green times from live traffic conditions, so vehicles wait less and queues stay short.</p>
+  <div class="btns">
+    <a class="btn primary" href="/register">Get started</a>
+    <a class="btn" href="/login">Login</a>
+    <a class="btn" href="#project">How it works</a>
+  </div>
+</section>
+
+<section id="project">
+  <h2>What this project does</h2>
+  <p class="sub">An AI controller for a single 4-way intersection, trained and tested in simulation on real traffic volumes.</p>
+  <div class="grid">
+    <div class="card"><div class="icon">⚠️</div><h3>The problem</h3><p>Fixed-time signals ignore real density. On our test hours the fixed-time baseline averaged a 30.1 s wait per vehicle, with the worst single wait at 1,917 s.</p></div>
+    <div class="card"><div class="icon">🎯</div><h3>The goal</h3><p>Cut vehicle waiting time, shorten queues and raise throughput by choosing signal timings dynamically.</p></div>
+    <div class="card"><div class="icon">🧠</div><h3>The method</h3><p>A DQN agent (PyTorch) picks which phase turns green and for how long, and is rewarded for short queues, fair waits and more vehicles getting through.</p></div>
+    <div class="card"><div class="icon">🧪</div><h3>The testbed</h3><p>SUMO traffic simulator controlled from Python via TraCI, with 2 lanes per approach and N/S and E/W phases.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Features</h2>
+  <p class="sub">What you can expect from the application.</p>
+  <div class="grid">
+    <div class="card"><div class="icon">⏱️</div><h3>Adaptive signal timing</h3><p>Green phases of 10, 20, 30 or 40 s chosen from the current state of the intersection.</p></div>
+    <div class="card"><div class="icon">📊</div><h3>Live traffic metrics</h3><p>Queue length, vehicle count, waiting time and density tracked for each lane.</p></div>
+    <div class="card"><div class="icon">⚖️</div><h3>Fixed-time vs AI</h3><p>Compare the trained agent against the fixed-timing baseline on the same held-out hours.</p></div>
+    <div class="card"><div class="icon">🔐</div><h3>User accounts</h3><p>Register and log in to access the dashboard and simulation results.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>How the AI learns</h2>
+  <p class="sub">The reinforcement learning loop in short.</p>
+  <div class="card">
+    <ol class="flow">
+      <li><b>Observe:</b> 35 values describe the intersection (queue, count, wait and occupancy for 8 lanes, plus the current phase and its elapsed time).</li>
+      <li><b>Act:</b> pick one of 8 actions: a phase (N/S or E/W) and a green duration. A 3 s yellow is added when switching.</li>
+      <li><b>Get rewarded:</b> reward = − queue cost − 0.5 × wait cost + 0.05 per vehicle through.</li>
+      <li><b>Learn:</b> experience replay and a target network train the 35→128→128→8 network over many simulated hours of real demand.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="dataset">
+  <h2>The dataset</h2>
+  <p class="sub">Real hourly vehicle counts drive the simulated demand.</p>
+  <div class="card">
+    <p style="color:var(--text)">The <b>Traffic Prediction Dataset</b> on Kaggle contains hourly counts of vehicles at four road junctions, recorded over roughly 20 months (Nov 2015 – Jun 2017). Each row holds a timestamp, a junction number, the vehicle count and an ID. Traffic is strongly shaped by time of day and day of week, which suits studying signal control under realistic peaks and quiet periods.</p>
+    <div class="stats">
+      <div class="stat"><b>Junction 1</b><span>used for this project</span></div>
+      <div class="stat"><b>Hourly</b><span>vehicle counts</span></div>
+      <div class="stat"><b>~20 months</b><span>of history</span></div>
+      <div class="stat"><b>Every 4th week</b><span>held out for testing</span></div>
+    </div>
+    <h3 style="margin:18px 0 8px">How we use it</h3>
+    <div class="scroll">
+    <table>
+      <tr><th>Step</th><th>Assumption</th></tr>
+      <tr><td>Scaling</td><td>Counts × 33.4 so the 95th-percentile training hour equals 3,000 vehicles/hour</td></tr>
+      <tr><td>Approach split</td><td>North 34%, South 29%, East 20%, West 17%</td></tr>
+      <tr><td>Turning split</td><td>70% straight, 15% right, 15% left</td></tr>
+      <tr><td>Train / test</td><td>Every 4th week reserved for testing, as raw volumes grow about 3.5× over the period</td></tr>
+    </table>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="credit">
+    <h2 style="font-size:1.3rem">Credits</h2>
+    <p style="margin:6px 0">Dataset: <b>Traffic Prediction Dataset</b> by <b>fedesoriano</b> (2021), published on Kaggle.<br>
+    <a href="https://www.kaggle.com/datasets/fedesoriano/traffic-prediction-dataset" target="_blank" rel="noopener">kaggle.com/datasets/fedesoriano/traffic-prediction-dataset</a></p>
+    <p style="margin:6px 0;color:var(--muted)">Simulation: Eclipse SUMO (DLR and contributors). Deep learning: PyTorch.</p>
+  </div>
+</section>
+
+<footer>
+  <a href="#home" style="color:var(--accent);text-decoration:none">Home</a> ·
+  <a href="/login" style="color:var(--accent);text-decoration:none">Login</a> ·
+  <a href="/register" style="color:var(--accent);text-decoration:none">Register</a>
+  <p>Adaptive Traffic Signal Control with a Deep Q-Network</p>
+</footer>
+</body>
+</html>
