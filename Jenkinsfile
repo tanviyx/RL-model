@@ -10,7 +10,7 @@ pipeline {
 
     triggers {
         githubPush()                    // instant, from the GitHub webhook
-        pollSCM('H/15 * * * *')         // fallback if the webhook cannot reach Jenkins
+        pollSCM('H/2 * * * *')         // fallback if the webhook cannot reach Jenkins
     }
 
     environment {
