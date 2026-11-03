@@ -21,12 +21,12 @@ RL-model/
 │   ├── package.json / package-lock.json
 │   ├── .env                      secrets, never committed
 │   └── .env.example              template without secrets
-├── frontend/                 Browser pages (no server code)
-│   ├── public/                   open to everyone
-│   │   ├── index.html  login.html  register.html
-│   │   ├── css/auth.css
-│   │   └── js/auth.js
-│   └── private/dashboard.html    only after login
+├── frontend/                 React client app
+│   ├── index.html                Vite entry point
+│   ├── src/main.jsx              React routing and screen rendering
+│   ├── pages/                    Landing and authentication screen templates
+│   ├── public/                   Static CSS and JavaScript assets
+│   └── private/                  Dashboard, simulation, and comparison templates
 ├── model/                    Python: SUMO + DQN
 │   ├── dqn_agent.py  sumo_env.py  train.py
 │   ├── run_baseline_real.py  test_rl_definition.py

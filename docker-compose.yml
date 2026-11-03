@@ -1,0 +1,51 @@
+# SmartSignal: web app + DQN model service + MongoDB.
+#   cp .env.example .env   (fill in secrets)   then   docker compose up -d --build
+# App: http://localhost:3000
+services:
+  mongo:
+    image: mongo:8
+    container_name: smartsignal_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 30s
+      retries: 10
+      start_period: 60s
+
+  model:
+    build:
+      context: ./model
+    image: smartsignal-model:${IMAGE_TAG:-latest}
+    container_name: smartsignal_model
+    restart: unless-stopped
+    expose:
+      - "5001"            # reachable by other containers only; no "ports:" on purpose
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime
+    image: smartsignal-backend:${IMAGE_TAG:-latest}
+    container_name: smartsignal_backend
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:                         # these override the same names in the env file
+      PORT: "3000"
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/smartsignal
+      AI_SERVICE_URL: http://model:5001
+    ports:
+      - "3000:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      model:
+        condition: service_healthy
+
+volumes:
+  mongo_data:

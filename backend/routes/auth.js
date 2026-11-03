@@ -7,6 +7,7 @@ const { requireAuth } = require('../middleware/auth');
 const { sendWelcomeEmail } = require('../utils/mailer');
 
 const router = express.Router();
+const touchLogin = (id) => User.updateOne({ _id: id }, { $set: { lastLoginAt: new Date() }, $inc: { loginCount: 1 } }).catch(() => {});
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12); // keeps login timing similar for unknown emails
 
@@ -33,6 +34,7 @@ router.post('/register', async (req, res) => {
 
     const user = await User.create({ name, email, passwordHash: await bcrypt.hash(password, 12) });
     setAuthCookie(res, user);
+    touchLogin(user._id);
     sendWelcomeEmail(user); // new user: welcome mail (not awaited)
     res.status(201).json({ redirect: '/dashboard' });
   } catch (err) {
@@ -60,6 +62,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid email or password.' });
 
     setAuthCookie(res, user); // returning user: no welcome mail
+    touchLogin(user._id);
     res.json({ redirect: '/dashboard' });
   } catch (err) {
     console.error(err);
@@ -76,6 +79,7 @@ router.get(
   (req, res) => {
     const { user, isNew } = req.user;
     setAuthCookie(res, user);
+    touchLogin(user._id);
     if (isNew) sendWelcomeEmail(user); // only brand-new accounts get the welcome mail
     res.redirect('/dashboard');
   }

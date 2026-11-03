@@ -100,12 +100,16 @@ const SimCore = (() => {
   }
 
   // ---- the simulation ----
-  function createSim(seed = 1, demand = 1200, controller = 'fixed') {
-    const rng = mulberry32(seed);
-    const expo = (rate) => -Math.log(1 - rng()) / rate;
+  function createSim(seed = 1, demand = 1200, controller = 'fixed', opts = {}) {
+    const rng = mulberry32(seed);                       // vehicle details that depend on the controller (lane choice)
+    // Arrivals have their own random stream, and each arriving vehicle's turn is fixed by (seed, approach, number).
+    // So a 'fixed' run and a 'dqn' run with the same seed receive exactly the same vehicles at the same moments.
+    const arrRng = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+    const expo = (rate) => -Math.log(1 - arrRng()) / rate;
+    const turnDraw = (a, k) => mulberry32(((seed * 2654435761) ^ (a * 40503) ^ (k * 9973)) >>> 0)();
     const rate = (a) => (demand / 3600) * SHARE[a];
     const S = { t: 0, vs: [], nextId: 1, phaseIdx: 0, phaseT: 0, completed: 0, waitSum: 0, travelSum: 0,
-                backlog: [0, 0, 0, 0], dropped: 0, spawned: 0, crossLog: [[], [], [], []], doneLog: [], hist: [], nextSample: 5, next: [0, 1, 2, 3].map((a) => expo(rate(a))) };
+                backlog: [0, 0, 0, 0], turns: [[], [], [], []], arrived: [0, 0, 0, 0], waits: opts.trackWaits ? [] : null, timings: opts.trackWaits ? [] : null, dropped: 0, spawned: 0, crossLog: [[], [], [], []], doneLog: [], hist: [], nextSample: 5, next: [0, 1, 2, 3].map((a) => expo(rate(a))) };
 
     // 'dqn' mode: the signal is run by the trained model. 'fixed' mode: the 42 s / 3 s plan.
     const ai = controller === 'dqn' ? {
@@ -123,7 +127,7 @@ const SimCore = (() => {
     const inZone = (v) => Math.abs(v.x) <= BOX + 4 && Math.abs(v.y) <= BOX + 4;
 
     function trySpawn(a) {
-      const x = rng();
+      const x = S.turns[a][0];
       const turn = x < 0.70 ? 'S' : x < 0.85 ? 'R' : 'L';
       let lane;
       if (turn === 'R') lane = 0;
@@ -210,18 +214,25 @@ const SimCore = (() => {
       else { ai.phase = ai.pendingPhase; ai.stage = 'green'; ai.stageT = 0; ai.stageDur = ai.pendingGreen; ai.timeInPhase = 0; }
     }
 
+    // signal-timing log for the database: one record per green period (fixed plan or AI decision)
+    function logPlanGreen() {
+      const p = PHASES[S.phaseIdx];
+      if (S.timings && !ai && p.s === 'G') S.timings.push({ t: +S.t.toFixed(1), phase: p.g === 'NS' ? 0 : 1, green: p.d, queues: snapshot().queues, kind: 'plan' });
+    }
+    logPlanGreen();   // the plan starts with a green at t = 0
+
     function step(dt = DT) {
       if (ai && ai.due) return false;     // waiting for the model's decision: simulated time does not move
       S.t += dt;
       if (ai) advanceAi(dt);
       else {
         S.phaseT += dt;
-        if (S.phaseT >= PHASES[S.phaseIdx].d) { S.phaseT -= PHASES[S.phaseIdx].d; S.phaseIdx = (S.phaseIdx + 1) % PHASES.length; }
+        if (S.phaseT >= PHASES[S.phaseIdx].d) { S.phaseT -= PHASES[S.phaseIdx].d; S.phaseIdx = (S.phaseIdx + 1) % PHASES.length; logPlanGreen(); }
       }
       for (let a = 0; a < 4; a++) {
-        while (S.next[a] <= S.t) { S.backlog[a]++; S.next[a] += expo(rate(a)); }
-        if (S.backlog[a] > 40) { S.backlog[a]--; S.dropped++; }
-        if (S.backlog[a] > 0 && trySpawn(a)) S.backlog[a]--;
+        while (S.next[a] <= S.t) { S.backlog[a]++; S.turns[a].push(turnDraw(a, S.arrived[a]++)); S.next[a] += expo(rate(a)); }
+        if (S.backlog[a] > 40) { S.backlog[a]--; S.turns[a].pop(); S.dropped++; }
+        if (S.backlog[a] > 0 && trySpawn(a)) { S.backlog[a]--; S.turns[a].shift(); }
       }
       for (const v of S.vs) {
         const c = posAt(v.path, v.s - LEN / 2);
@@ -236,7 +247,7 @@ const SimCore = (() => {
       }
       S.vs = S.vs.filter((v) => {
         if (v.s < v.path.total) return true;
-        S.completed++; S.waitSum += v.wait; S.travelSum += S.t - v.born; S.doneLog.push(S.t);
+        S.completed++; S.waitSum += v.wait; if (S.waits) S.waits.push(v.wait); S.travelSum += S.t - v.born; S.doneLog.push(S.t);
         return false;
       });
       // keep only the last WINDOW seconds of throughput events
@@ -353,6 +364,7 @@ const SimCore = (() => {
       if (!Number.isInteger(action) || action < 0 || action > 7) throw new Error('invalid action ' + action);
       const phase = Math.floor(action / 4), green = AI_DURATIONS[action % 4], changed = phase !== ai.phase;
       const snap = snapshot();
+      if (S.timings) S.timings.push({ t: +S.t.toFixed(1), phase, green, queues: snap.queues, kind: 'decision', action, changed, q: q ? q.map((x) => Math.round(x * 1000) / 1000) : null });
       ai.decisions.push({ n: ++ai.n, t: S.t, action, phase, green, changed, q: q || null, queue: snap.totalQueue, state: aiState() });
       if (ai.decisions.length > 200) ai.decisions.shift();
       ai.counts[action]++; ai.greenSum += green;
@@ -369,6 +381,13 @@ const SimCore = (() => {
       get vehicles() { return S.vs; },
       get history() { return S.hist; },
       get time() { return S.t; },
+      // raw totals for the headless experiment runner (waits is only filled when opts.trackWaits is set)
+      stats() {
+        let onRoadWait = 0, maxWait = 0;
+        for (const v of S.vs) { onRoadWait += v.wait; if (v.wait > maxWait) maxWait = v.wait; }
+        return { spawned: S.spawned, completed: S.completed, dropped: S.dropped, waitSum: S.waitSum, travelSum: S.travelSum,
+                 waits: S.waits, timings: S.timings, onRoad: S.vs.length, onRoadWait, maxWaitOnRoad: maxWait };
+      },
       setDemand(v) {
         demand = v;
         for (let a = 0; a < 4; a++) S.next[a] = S.t + expo(rate(a));

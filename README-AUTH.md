@@ -1,10 +1,10 @@
 # SmartSignal – Step 6.2 Authentication
 
 ## Setup
-1. `npm install`
-2. Copy `.env.example` to `.env` and fill it in (MongoDB URI, JWT_SECRET, Google keys, SMTP).
-3. Put your home page at `public/index.html` (change its Login/Register links to `/login` and `/register`).
-4. `npm run dev` then open http://localhost:3000
+1. Copy `.env.example` to `backend/.env` and fill it in (MongoDB URI, JWT_SECRET, Google keys, SMTP).
+2. Run `npm ci` and `npm run dev` in `backend` to start the API.
+3. Run `npm ci` and `npm run dev` in `frontend` to start the React app, then open http://localhost:5173.
+4. React routes and renders the page templates; static CSS and JavaScript assets are served from `frontend/public`.
 
 ## Google keys
 Google Cloud Console > APIs & Services > Credentials > Create OAuth client ID (Web application).

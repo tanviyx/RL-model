@@ -1,0 +1,2 @@
+# Only what model/serve.py needs at run time (the full requirements.txt also has SUMO and pandas for training)
+numpy

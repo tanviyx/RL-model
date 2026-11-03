@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+results/_cache
+results/models/*
+!results/models/dqn_last.pt
+results/*.csv
+*.xml
+*.csv

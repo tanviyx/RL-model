@@ -4,19 +4,7 @@ const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
-const BASE = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5001';
-const STATE_SIZE = 35;
-
-async function callModel(path, options) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 3000);
-  try {
-    const res = await fetch(BASE + path, { ...options, signal: ctrl.signal });
-    return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
-  } finally {
-    clearTimeout(timer);
-  }
-}
+const { callModel, STATE_SIZE } = require('../services/modelClient');
 
 // Is the model service running, and which checkpoint does it serve?
 router.get('/status', requireAuth, async (req, res) => {

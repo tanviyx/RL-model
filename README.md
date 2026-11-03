@@ -1,109 +1,56 @@
-# Capstone_project
+# SmartSignal
 
-# RL-Based Smart Traffic Signal Control
+SmartSignal is a reinforcement-learning traffic signal control project. It compares an adaptive DQN controller with a fixed-time signal at a four-way intersection.
 
-## Problem Statement
-Problem: Fixed-timer signals. Objectives: Adaptive control. Approach: Q-learning. Outcome: Reduced wait times. Tools: RL.
+## MERN stack
 
-## Objectives
-- Objective 1
-- Objective 2
-- Objective 3
+- **MongoDB** stores accounts, experiments, traffic samples, and signal timings.
+- **Express.js and Node.js** provide authentication and the REST API.
+- **React and Vite** render the web application and create the production bundle.
+- **Python, PyTorch, and SUMO** power the traffic-control model and evaluation.
 
+React renders the existing landing, authentication, dashboard, comparison, and simulation screens. The current simulation and chart interactions are retained while the frontend is migrated.
 
-i just wanna test
+## Run locally
 
+Requirements: Node.js 20 or newer, MongoDB, and Python for the model service.
 
+1. Copy `.env.example` to `backend/.env` and set the MongoDB URI, JWT secret, and any Google OAuth or mail settings you use.
+2. Start the Express API from a terminal:
 
+   ```powershell
+   cd backend
+   npm ci
+   npm run dev
+   ```
 
+3. Start the React development server in a second terminal:
 
+   ```powershell
+   cd frontend
+   npm ci
+   npm run dev
+   ```
 
+4. Open `http://localhost:5173`. Vite proxies `/api` requests to Express on port 3000.
+5. To use live DQN decisions and comparison runs, install `model/requirements-serve.txt` and run `python serve.py` from the `model` directory.
 
+Google sign-in requires a Google OAuth web client. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL` in `backend/.env`, and register the callback URL with the OAuth client.
 
-## Tech Stack
-- Frontend:
-- Backend:
-- Database:
-- Tools:
+## Production and Docker
 
-## Folder Structure
+Build the React application with `npm run build` in `frontend`. Express serves the resulting `frontend/dist` bundle and API from the same origin. Docker Compose builds the frontend as part of the backend image; copy `.env.example` to the repository-root `.env` before running `docker compose up --build`.
 
+## Project architecture
 
+<img width="780" height="387" alt="Project architecture" src="https://github.com/user-attachments/assets/05bd9263-eef1-4c1a-a094-913c5ed8bbb6" />
 
+<img width="776" height="382" alt="Project architecture" src="https://github.com/user-attachments/assets/92be5304-bbd0-4044-ab06-98d6bcc9a216" />
 
+<img width="786" height="387" alt="Project architecture" src="https://github.com/user-attachments/assets/6eba4970-00d9-4f5f-b966-b75606209b73" />
 
+## Team
 
-
-
-
-
-
-
-
-
-
-
-
-
-```bash
-Capstone_project/
-│
-├── README.md
-├── .gitignore
-├── requirements.txt
-├── CONTRIBUTING.md
-│
-├── docs/                  # Reports, PPT, diagrams
-│   ├── proposal/
-│   ├── review/
-│   └── final-report/
-│
-├── src/                   # Main source code
-│   ├── backend/
-│   ├── frontend/
-│   └── ml-model/
-│
-├── data/                  # Datasets
-│   ├── raw/
-│   └── processed/
-│
-├── tests/                 # Test cases
-│
-├── scripts/               # Helper scripts
-│
-└── docker/                # Docker-related files (later)
-
-```
-## Project Architecture
-<img width="780" height="387" alt="image" src="https://github.com/user-attachments/assets/05bd9263-eef1-4c1a-a094-913c5ed8bbb6" />
-
-<img width="776" height="382" alt="image" src="https://github.com/user-attachments/assets/92be5304-bbd0-4044-ab06-98d6bcc9a216" />
-
-<img width="786" height="387" alt="image" src="https://github.com/user-attachments/assets/6eba4970-00d9-4f5f-b966-b75606209b73" />
-
-
-## Installation & Setup
-Steps to run locally.
-
-## Google Sign-In
-Authentication uses Google Identity Services. Create an OAuth 2.0 Client ID in Google Cloud Console and add `https://localhost:5173` as an authorized JavaScript origin.
-
-For Docker Compose, add the same client ID to the root `.env` file:
-
-```env
-GOOGLE_CLIENT_ID=your-google-oauth-client-id
-JWT_SECRET=your-session-signing-secret
-```
-
-The client ID is passed to both the frontend and backend. For local development outside Docker, set `VITE_GOOGLE_CLIENT_ID` for the Vite client and `GOOGLE_CLIENT_ID` for the server to that same value. The server also needs `MONGO_URI` and `JWT_SECRET`.
-
-## Team Members
-- Shivanshi 
+- Shivanshi
 - Tanvi
 - Himadri
-
-## Timeline
-Phase-wise breakdown.
-
-## License
-(Optional)

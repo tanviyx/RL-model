@@ -2,35 +2,71 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dashboard · SmartSignal</title>
 <style>
-body{margin:0;background:#ebe9e3;color:#1c2226;font-family:system-ui,sans-serif}
+:root{--ink:#1c2226;--bg:#ebe9e3;--card:#fbfaf7;--line:#cfccc3;--fixed:#d9822b;--ai:#1f9d5c;--mute:#5d666c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,sans-serif}
 header{display:flex;justify-content:space-between;align-items:center;padding:16px 5vw;background:#2b3238;color:#fff}
 header img{width:32px;height:32px;border-radius:50%;vertical-align:middle;margin-right:8px}
-button{padding:8px 16px;border:1px solid #fff;border-radius:8px;background:transparent;color:#fff;cursor:pointer;font:inherit}
-main{max-width:800px;margin:48px auto;padding:0 5vw}
-.card{background:#fbfaf7;border:1px solid #cfccc3;border-radius:14px;padding:28px}
-.launch{display:inline-block;margin-top:8px;padding:12px 24px;border-radius:10px;background:#2fbf71;color:#1c2226;font-weight:700;text-decoration:none}
-.launch.alt{background:#f2b632;margin-left:10px}
+header button{padding:8px 16px;border:1px solid #fff;border-radius:8px;background:transparent;color:#fff;cursor:pointer;font:inherit}
+main{max-width:1100px;margin:32px auto;padding:0 5vw}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px;margin-bottom:20px}
+h1{margin:0 0 6px}h2{margin:0 0 12px;font-size:1.15rem}
+.launch{display:inline-block;margin:8px 10px 0 0;padding:12px 22px;border-radius:10px;background:#2fbf71;color:#1c2226;font-weight:700;text-decoration:none}
+.launch.alt{background:#f2b632}
 .launch:focus-visible{outline:3px solid #f2b632;outline-offset:2px}
+.note{color:var(--mute);line-height:1.5;margin:0 0 12px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px}
+.stat b{display:block;font-size:1.6rem}.stat span{color:var(--mute);font-size:.88rem}
+.pos{color:var(--ai)}.neg{color:#b3261e}
+canvas{width:100%;height:230px;background:#fff;border:1px solid var(--line);border-radius:10px}
+.legend{display:flex;gap:16px;font-size:.88rem;margin:4px 0 10px}
+.dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:4px}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+th,td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+select{padding:7px 9px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+@media(max-width:700px){.two{grid-template-columns:1fr}}
 </style></head>
 <body>
 <header><span id="who">…</span><button id="logout">Log out</button></header>
-<main><div class="card"><h1 id="hello">Welcome</h1>
-<p>You’re signed in. Open the traffic simulation to watch an intersection run with traffic signals, then start, pause or reset it, or let the trained AI model run the signals.</p>
-<a class="launch" href="/simulation">Open traffic simulation</a>
-<a class="launch alt" href="/simulation?controller=dqn">Open with AI signal control</a></div></main>
-<script>
-(async () => {
-  const r = await fetch('/api/auth/me');
-  if (!r.ok) return (location.href = '/login');
-  const u = await r.json();
-  document.getElementById('hello').textContent = 'Welcome, ' + u.name;
-  const who = document.getElementById('who');
-  who.textContent = '';
-  if (u.avatar) { const i = document.createElement('img'); i.src = u.avatar; i.alt = ''; who.appendChild(i); }
-  who.appendChild(document.createTextNode(u.email));
-})();
-document.getElementById('logout').onclick = async () => {
-  const r = await fetch('/api/auth/logout', { method: 'POST' });
-  location.href = (await r.json()).redirect;
-};
-</script></body></html>
+<main>
+  <div class="card"><h1 id="hello">Welcome</h1>
+    <p class="note" id="visit"></p>
+    <a class="launch" href="/simulation">Open traffic simulation</a>
+    <a class="launch alt" href="/simulation?controller=dqn">Open with AI signal control</a>
+    <a class="launch alt" href="/compare">Compare fixed vs AI (5 min / 30 min / 1 hr)</a>
+  </div>
+
+  <div class="card"><h2>Your stored history</h2>
+    <div class="stats" id="totals"></div>
+    <p class="note" id="empty" style="margin-top:14px" hidden>No finished comparison runs yet. Start one from the Compare page and your history will appear here.</p>
+  </div>
+
+  <div id="hist" hidden>
+    <div class="card"><h2>How much better is the AI? (average over all your runs)</h2>
+      <p class="note">Positive means the AI did better than the fixed-time signal: shorter waits and queues, more vehicles through.</p>
+      <div class="stats" id="improve"></div>
+    </div>
+
+    <div class="card"><h2>Average wait per run (latest 20)</h2>
+      <div class="legend"><span><span class="dot" style="background:var(--fixed)"></span>Fixed time</span><span><span class="dot" style="background:var(--ai)"></span>AI</span></div>
+      <canvas id="cTrend"></canvas>
+    </div>
+
+    <div class="card two">
+      <div><h2>By run length</h2><table><thead><tr><th>Length</th><th>Runs</th><th>Wait</th><th>Queue</th></tr></thead><tbody id="tDur"></tbody></table></div>
+      <div><h2>By traffic level</h2><table><thead><tr><th>Traffic</th><th>Runs</th><th>Wait</th><th>Queue</th></tr></thead><tbody id="tTraffic"></tbody></table></div>
+    </div>
+
+    <div class="card"><h2>Signal timings</h2>
+      <p class="note" id="timingNote"></p>
+      <div class="legend"><span><span class="dot" style="background:var(--fixed)"></span>Fixed time</span><span><span class="dot" style="background:var(--ai)"></span>AI</span></div>
+      <canvas id="cGreen"></canvas>
+      <table style="margin-top:12px"><thead><tr><th>Signal</th><th>Green periods</th><th>Average green</th><th>North/South share</th><th>Green lengths used</th></tr></thead><tbody id="tTiming"></tbody></table>
+    </div>
+  </div>
+</main>
+<script src="/js/dashboard.js"></script>
+</body></html>

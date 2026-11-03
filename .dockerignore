@@ -1,0 +1,18 @@
+# Build context for the backend image is the repo root (backend/ needs frontend/ and one model file)
+.git
+**/node_modules
+**/.env
+.env.*
+!.env.example
+certs
+docs
+**/__pycache__
+**/*.pyc
+Jenkinsfile
+docker-compose*.yml
+
+# only baseline_real_eval.csv is needed from model/ (read by backend/routes/traffic.js)
+model/*
+!model/results
+model/results/*
+!model/results/baseline_real_eval.csv

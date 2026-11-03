@@ -8,6 +8,8 @@ const userSchema = new mongoose.Schema(
     googleId: { type: String, index: true, sparse: true },
     avatar: String,
     welcomeEmailSent: { type: Boolean, default: false },
+    lastLoginAt: Date,                                // set on every successful login (password or Google)
+    loginCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
